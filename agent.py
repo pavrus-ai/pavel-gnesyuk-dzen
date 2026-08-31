@@ -4,6 +4,8 @@ from email.utils import formatdate
 
 GROQ_KEY = os.environ.get("GROQ_KEY", "")
 OR_KEY   = os.environ.get("OPENROUTER_KEY", "")
+TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TG_CHANNEL = os.environ.get("TELEGRAM_CHANNEL", "")   # @username или -100... вашего канала
 
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 PAGES_BASE = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
@@ -13,7 +15,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v3 (без Telegram)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v4 (мост Telegram→Дзен)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -64,7 +66,7 @@ def ai_text(prompt):
     return None
 
 def build_article(book, mode, day):
-    """Длинная статья для Дзена: сюжет / герои / цитата / мир / интрига"""
+    """Длинная уникальная статья: сюжет / герои / цитата / мир / интрига"""
     t, a, u, s = book["title"], book["about"], book["url"], book["series"]
     base = (f"Напиши развёрнутую статью для Дзена о романе Павла Гнесюка «{t}» (серия «{s}»). "
             f"Текст должен быть ПОЛНОСТЬЮ уникальным, живым, как литературный блог. "
@@ -72,43 +74,53 @@ def build_article(book, mode, day):
             f"3. Заголовок ЗАГЛАВНЫМИ буквами, в заголовке или первом абзаце обязательно название романа «{t}». "
             f"4. Не пиши «как я писал книгу» — пиши как литературный обозреватель. "
             f"5. В конце обязательно: «Читайте роман «{t}» на ЛитРес: {u}». ")
-
     if mode == "quote" and book.get("fragments"):
         fr = book["fragments"][day % len(book["fragments"])]
         prompt = (base + f"Тип статьи: РАЗБОР ЦИТАТЫ. Возьми цитату из романа: «{fr}» — "
-                  f"раскрой её смысл, атмосферу, связь с сюжетом ({a}), что она говорит о герое и конфликте. "
-                  f"3-5 абзацев размышления, живо и образно.")
+                  f"раскрой её смысл, атмосферу, связь с сюжетом ({a}). 3-5 абзацев размышления.")
         theme = f"dramatic scene from novel: {fr[:80]}"
     elif mode == "hero":
         prompt = (base + f"Тип статьи: ГЕРОИ. Расскажи о главных героях романа, их характерах, "
-                  f"мотивах и внутреннем конфликте, опираясь на сюжет: {a}. "
-                  f"Опиши, почему этим героям сопереживаешь, как они меняются по ходу истории.")
+                  f"мотивах и внутреннем конфликте, опираясь на сюжет: {a}.")
         theme = f"portrait of the novel protagonist, {a[:80]}"
     elif mode == "plot":
-        prompt = (base + f"Тип статьи: СЮЖЕТ. Перескажи завязку и развитие интриги романа БЕЗ спойлеров "
-                  f"концовки, опираясь на: {a}. Создай ощущение, что читатель вот-вот откроет книгу.")
+        prompt = (base + f"Тип статьи: СЮЖЕТ. Перескажи завязку и развитие интриги БЕЗ спойлеров "
+                  f"концовки, опираясь на: {a}.")
         theme = f"adventure plot scene, {a[:80]}"
     elif mode == "world":
         prompt = (base + f"Тип статьи: МИР КНИГИ. Опиши вселенную, атмосферу и место действия романа "
-                  f"(серия «{s}»), детали мира и правила, по которым он живёт. Сюжет для опоры: {a}.")
+                  f"(серия «{s}»). Сюжет для опоры: {a}.")
         theme = f"fantasy world landscape of the novel series, {a[:80]}"
-    else:  # intrigue
-        prompt = (base + f"Тип статьи: ИНТРИГА. Расскажи, почему роман «{t}» невозможно отложить в сторону: "
-                  f"ключевые тайны, вопросы и повороты (без спойлеров). Сюжет: {a}. "
-                  f"Закончи сильным призывом прочитать книгу.")
+    else:
+        prompt = (base + f"Тип статьи: ИНТРИГА. Расскажи, почему роман «{t}» невозможно отложить: "
+                  f"ключевые тайны и повороты (без спойлеров). Сюжет: {a}.")
         theme = f"mysterious intrigue scene with hidden clues, {a[:80]}"
-
     txt = ai_text(prompt)
     if not txt:
         log("⚠️ ИИ недоступны. Стандартная статья.")
         txt = (f"РОМАН «{t.upper()}»: ИСТОРИЯ, КОТОРАЯ ЗАТЯГИВАЕТ\n\n{a}\n\n"
-               f"Роман «{t}» из серии «{s}» — это захватывающее путешествие, полное тайн и неожиданных поворотов. "
-               f"Герои, которым сопереживаешь, мир, в который веришь, и интрига, которая не отпускает до последней страницы.\n\n"
+               f"Роман «{t}» из серии «{s}» — захватывающее путешествие, полное тайн и поворотов.\n\n"
                f"Читайте роман «{t}» на ЛитРес: {u}")
     return f"{txt}\n\n{TAGS}", theme
 
 def esc(s):
     return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+
+def tg_post_channel(img_bytes, caption, full_text):
+    """Публикует статью в Telegram-канал: фото + полный текст"""
+    if not TG_TOKEN or not TG_CHANNEL:
+        log("⚠️ Нет TELEGRAM_TOKEN/TELEGRAM_CHANNEL — публикация только в RSS")
+        return
+    r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
+                      data={"chat_id": TG_CHANNEL, "caption": caption},
+                      files={"photo": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120).json()
+    if not r.get("ok"):
+        log(f"⚠️ sendPhoto: {str(r)[:100]}")
+        return
+    for chunk in [full_text[i:i+4096] for i in range(0, len(full_text), 4096)]:
+        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                      data={"chat_id": TG_CHANNEL, "text": chunk}, timeout=60)
+    log("✅ Опубликовано в Telegram-канал")
 
 def main():
     books = json.load(open("books.json", encoding="utf-8"))["books"]
@@ -122,7 +134,6 @@ def main():
 
     text, theme = build_article(book, mode, day)
     if len(text) < 2000:
-        log(f"⚠️ Статья короткая ({len(text)}), добавляю детали сюжета")
         text += f"\n\nО чём роман «{book['title']}»:\n{book['about']}\n\n📖 Читать на ЛитРес: {book['url']}"
 
     # --- Картинка ---
@@ -133,16 +144,20 @@ def main():
     log("Скачивание картинки...")
     r = requests.get(url, timeout=180)
     r.raise_for_status()
+    img_bytes = r.content
     os.makedirs("img", exist_ok=True)
-    img_name = f"img/{day}.jpg"
-    with open(img_name, "wb") as f:
-        f.write(r.content)
-    img_url = f"{PAGES_BASE}/{img_name}"
-    log(f"✅ Картинка: {img_name} ({len(r.content)} байт)")
+    with open(f"img/{day}.jpg", "wb") as f:
+        f.write(img_bytes)
+    img_url = f"{PAGES_BASE}/img/{day}.jpg"
+    log(f"✅ Картинка: img/{day}.jpg ({len(img_bytes)} байт)")
 
-    # --- RSS ---
+    # --- Публикация в Telegram-канал (мост в Дзен) ---
     lines = text.split("\n")
     title = lines[0][:150].replace("**","").strip()
+    caption = f"{title}\n\n📖 Читать на ЛитРес: {book['url']}"[:1024]
+    tg_post_channel(img_bytes, caption, text)
+
+    # --- RSS (запасная лента) ---
     body_html = esc(text).replace("\n", "<br><br>")
     try:
         posts = json.load(open("posts.json", encoding="utf-8"))
@@ -153,13 +168,12 @@ def main():
         "title": title,
         "text_html": body_html,
         "img": img_url,
-        "size": len(r.content),
+        "size": len(img_bytes),
         "link": book["url"],
         "pubdate": formatdate(time.time(), usegmt=True)
     })
     posts = posts[:30]
     json.dump(posts, open("posts.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-
     items = ""
     for it in posts:
         items += f"""  <item>
@@ -177,17 +191,15 @@ def main():
 <channel>
   <title>Павел Гнесюк — литературный блог</title>
   <link>https://dzen.ru/bookpg</link>
-  <description>Статьи о романах Павла Гнесюка: сюжет, герои, цитаты, миры и интриги книг «Хранители» и «Тарские легенды».</description>
+  <description>Статьи о романах Павла Гнесюка: сюжет, герои, цитаты, миры и интриги.</description>
   <language>ru</language>
-  <pubDate>{formatdate(time.time(), usegmt=True)}</pubDate>
 {items}</channel>
 </rss>
 """
     open("rss.xml", "w", encoding="utf-8").write(rss)
     log(f"✅ RSS обновлён: статей в ленте: {len(posts)}")
-    log(f"🔗 Лента: {PAGES_BASE}/rss.xml")
     log("=" * 50)
-    log("✅ FINISH: статья готова для Дзена!")
+    log("✅ FINISH: статья ушла в Telegram-канал и RSS!")
     log("=" * 50)
 
 if __name__ == "__main__":
