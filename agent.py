@@ -1,0 +1,212 @@
+# -*- coding: utf-8 -*-
+import os, json, datetime, requests, time
+from email.utils import formatdate
+
+GROQ_KEY = os.environ.get("GROQ_KEY", "")
+OR_KEY   = os.environ.get("OPENROUTER_KEY", "")
+TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TG_CHAT  = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
+PAGES_BASE = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
+TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
+REPORT = []
+
+def log(msg):
+    print(msg); REPORT.append(msg)
+
+log("Версия","ℹ️","pavel-gnesyuk-dzen v2 (статьи: сюжет/герои/цитаты/мир/интрига)")
+
+def telegram(msg):
+    if TG_TOKEN and TG_CHAT:
+        try:
+            requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                          data={"chat_id": TG_CHAT, "text": msg}, timeout=30)
+        except Exception as e:
+            print("Telegram error:", e)
+
+def _extract(r):
+    try: return r["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError): return None
+
+def ai_groq(prompt, model):
+    if not GROQ_KEY: return None
+    full_prompt = f"{prompt}\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
+    try:
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_KEY}"},
+            json={"model": model, "temperature": 0.8,
+                  "messages": [{"role": "user", "content": full_prompt}]}, timeout=90).json()
+        if "error" in r: return None
+        return _extract(r)
+    except Exception:
+        return None
+
+def ai_openrouter(prompt, model):
+    if not OR_KEY: return None
+    full_prompt = f"{prompt}\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
+    try:
+        r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
+            json={"model": model, "temperature": 0.8,
+                  "messages": [{"role": "user", "content": full_prompt}]}, timeout=90).json()
+        if "error" in r: return None
+        return _extract(r)
+    except Exception:
+        return None
+
+def ai_text(prompt):
+    models = [
+        ("groq", "llama-3.3-70b-versatile"),
+        ("openrouter", "meta-llama/llama-3.3-70b-instruct:free"),
+        ("openrouter", "google/gemma-3-27b-it:free"),
+        ("openrouter", "deepseek/deepseek-chat-v3-0324:free"),
+        ("openrouter", "auto")
+    ]
+    for provider, model in models:
+        try:
+            res = ai_groq(prompt, model) if provider == "groq" else ai_openrouter(prompt, model)
+            if res and len(res) > 1500:
+                log(f"✅ Успех: {provider} ({model}), {len(res)} симв.")
+                return res
+        except Exception:
+            pass
+    return None
+
+def build_article(book, mode, day):
+    """Длинная статья для Дзена по данным книги: сюжет / герои / цитата / мир / интрига"""
+    t, a, u, s = book["title"], book["about"], book["url"], book["series"]
+    base = (f"Напиши развёрнутую статью для Дзена о романе Павла Гнесюка «{t}» (серия «{s}»). "
+            f"Текст должен быть ПОЛНОСТЬЮ уникальным, живым, как литературный блог. "
+            f"Требования: 1. ТОЛЬКО русский язык. 2. Длина СТРОГО 2500-4000 символов. "
+            f"3. Заголовок ЗАГЛАВНЫМИ буквами, в заголовке или первом абзаце обязательно название романа «{t}». "
+            f"4. Не пиши «как я писал книгу» — пиши как литературный обозреватель. "
+            f"5. В конце обязательно: «Читайте роман «{t}» на ЛитРес: {u}». ")
+
+    if mode == "quote" and book.get("fragments"):
+        fr = book["fragments"][day % len(book["fragments"])]
+        prompt = (base + f"Тип статьи: РАЗБОР ЦИТАТЫ. Возьми цитату из романа: «{fr}» — "
+                  f"раскрой её смысл, атмосферу, связь с сюжетом ({a}), что она говорит о герое и конфликте. "
+                  f"3-5 абзацев размышления, живо и образно.")
+        theme = f"dramatic scene from novel: {fr[:80]}"
+    elif mode == "hero":
+        prompt = (base + f"Тип статьи: ГЕРОИ. Расскажи о главных героях романа, их характерах, "
+                  f"мотивах и внутреннем конфликте, опираясь на сюжет: {a}. "
+                  f"Опиши, почему этим героям сопереживаешь, как они меняются по ходу истории.")
+        theme = f"portrait of the novel protagonist, {a[:80]}"
+    elif mode == "plot":
+        prompt = (base + f"Тип статьи: СЮЖЕТ. Перескажи завязку и развитие интриги романа БЕЗ спойлеров "
+                  f"концовки, опираясь на: {a}. Создай ощущение, что читатель вот-вот откроет книгу.")
+        theme = f"adventure plot scene, {a[:80]}"
+    elif mode == "world":
+        prompt = (base + f"Тип статьи: МИР КНИГИ. Опиши вселенную, атмосферу и место действия романа "
+                  f"(серия «{s}»), детали мира и правила, по которым он живёт. Сюжет для опоры: {a}.")
+        theme = f"fantasy world landscape of the novel series, {a[:80]}"
+    else:  # intrigue
+        prompt = (base + f"Тип статьи: ИНТРИГА. Расскажи, почему роман «{t}» невозможно отложить в сторону: "
+                  f"ключевые тайны, вопросы и повороты (без спойлеров). Сюжет: {a}. "
+                  f"Закончи сильным призывом прочитать книгу.")
+        theme = f"mysterious intrigue scene with hidden clues, {a[:80]}"
+
+    txt = ai_text(prompt)
+    if not txt:
+        log("⚠️ ИИ недоступны. Стандартная статья.")
+        txt = (f"РОМАН «{t.upper()}»: ИСТОРИЯ, КОТОРАЯ ЗАТЯГИВАЕТ\n\n{a}\n\n"
+               f"Роман «{t}» из серии «{s}» — это захватывающее путешествие, полное тайн и неожиданных поворотов. "
+               f"Герои, которым сопереживаешь, мир, в который веришь, и интрига, которая не отпускает до последней страницы.\n\n"
+               f"Читайте роман «{t}» на ЛитРес: {u}")
+    return f"{txt}\n\n{TAGS}", theme
+
+def esc(s):
+    return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+
+def main():
+    books = json.load(open("books.json", encoding="utf-8"))["books"]
+    day = datetime.date.today().toordinal()
+    book = books[day % len(books)]
+    modes = ["plot", "hero", "quote", "world", "intrigue"]
+    mode = modes[day % len(modes)]
+    if mode == "quote" and not book.get("fragments"):
+        mode = "plot"
+    log(f"📚 Книга дня: «{book['title']}» ({book['series']}) | Тип статьи: {mode}")
+
+    text, theme = build_article(book, mode, day)
+    if len(text) < 2000:
+        log(f"⚠️ Статья короткая ({len(text)}), добавляю детали сюжета")
+        text += f"\n\nО чём роман «{book['title']}»:\n{book['about']}\n\n📖 Читать на ЛитРес: {book['url']}"
+
+    # --- Картинка ---
+    clean_theme = "".join(c for c in theme if c.isalnum() or c.isspace())[:120].strip()
+    p = ("Editorial illustration for russian literary article, "
+         + clean_theme + ", artistic dramatic style, cinematic light, no text")
+    url = (POLLINATIONS_API + requests.utils.quote(p) + "?nologo=true&seed=" + str(day + 2000000))
+    log("Скачивание картинки...")
+    r = requests.get(url, timeout=180)
+    r.raise_for_status()
+    os.makedirs("img", exist_ok=True)
+    img_name = f"img/{day}.jpg"
+    with open(img_name, "wb") as f:
+        f.write(r.content)
+    img_url = f"{PAGES_BASE}/{img_name}"
+    log(f"✅ Картинка: {img_name} ({len(r.content)} байт)")
+
+    # --- RSS ---
+    lines = text.split("\n")
+    title = lines[0][:150].replace("**","").strip()
+    body_html = esc(text).replace("\n", "<br><br>")
+    try:
+        posts = json.load(open("posts.json", encoding="utf-8"))
+    except Exception:
+        posts = []
+    posts.insert(0, {
+        "guid": f"pavel-gnesyuk-{day}",
+        "title": title,
+        "text_html": body_html,
+        "img": img_url,
+        "size": len(r.content),
+        "link": book["url"],
+        "pubdate": formatdate(time.time(), usegmt=True)
+    })
+    posts = posts[:30]
+    json.dump(posts, open("posts.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+
+    items = ""
+    for it in posts:
+        items += f"""  <item>
+    <title>{esc(it['title'])}</title>
+    <link>{it['link']}</link>
+    <guid isPermaLink="false">{it['guid']}</guid>
+    <pubDate>{it['pubdate']}</pubDate>
+    <description><![CDATA[<img src="{it['img']}" width="1200"><br><br>{it['text_html']}]]></description>
+    <media:content url="{it['img']}" type="image/jpeg" medium="image"/>
+    <enclosure url="{it['img']}" type="image/jpeg" length="{it['size']}"/>
+  </item>
+"""
+    rss = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+<channel>
+  <title>Павел Гнесюк — литературный блог</title>
+  <link>https://dzen.ru/bookpg</link>
+  <description>Статьи о романах Павла Гнесюка: сюжет, герои, цитаты, миры и интриги книг «Хранители» и «Тарские легенды».</description>
+  <language>ru</language>
+  <pubDate>{formatdate(time.time(), usegmt=True)}</pubDate>
+{items}</channel>
+</rss>
+"""
+    open("rss.xml", "w", encoding="utf-8").write(rss)
+    log(f"✅ RSS обновлён: статей в ленте: {len(posts)}")
+
+    report_msg = (f"✅ СТАТЬЯ ДЛЯ ДЗЕНА ГОТОВА!\n📖 Книга: {book['title']}\n🎯 Тип: {mode}\n"
+                  f"📝 Длина: {len(text)} симв.\n🔗 Лента: {PAGES_BASE}/rss.xml")
+    telegram(report_msg + "\n\n" + "\n".join(REPORT))
+    log("=" * 50)
+    log("✅ FINISH: статья готова для Дзена!")
+    log("=" * 50)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        log(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        telegram("❌ АГЕНТ ДЗЕНА УПАЛ:\n" + "\n".join(REPORT))
+        raise
