@@ -4,8 +4,6 @@ from email.utils import formatdate
 
 GROQ_KEY = os.environ.get("GROQ_KEY", "")
 OR_KEY   = os.environ.get("OPENROUTER_KEY", "")
-TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TG_CHAT  = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 PAGES_BASE = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
@@ -13,17 +11,9 @@ TAGS = "#ПавелГнесюк #книги #авторскийблог #пис�
 REPORT = []
 
 def log(msg):
-    print(msg); REPORT.append(msg)
+    print(msg, flush=True); REPORT.append(msg)
 
-log("Версия","ℹ️","pavel-gnesyuk-dzen v2 (статьи: сюжет/герои/цитаты/мир/интрига)")
-
-def telegram(msg):
-    if TG_TOKEN and TG_CHAT:
-        try:
-            requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                          data={"chat_id": TG_CHAT, "text": msg}, timeout=30)
-        except Exception as e:
-            print("Telegram error:", e)
+log("Версия ℹ️ pavel-gnesyuk-dzen v3 (без Telegram)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -74,7 +64,7 @@ def ai_text(prompt):
     return None
 
 def build_article(book, mode, day):
-    """Длинная статья для Дзена по данным книги: сюжет / герои / цитата / мир / интрига"""
+    """Длинная статья для Дзена: сюжет / герои / цитата / мир / интрига"""
     t, a, u, s = book["title"], book["about"], book["url"], book["series"]
     base = (f"Напиши развёрнутую статью для Дзена о романе Павла Гнесюка «{t}» (серия «{s}»). "
             f"Текст должен быть ПОЛНОСТЬЮ уникальным, живым, как литературный блог. "
@@ -195,10 +185,7 @@ def main():
 """
     open("rss.xml", "w", encoding="utf-8").write(rss)
     log(f"✅ RSS обновлён: статей в ленте: {len(posts)}")
-
-    report_msg = (f"✅ СТАТЬЯ ДЛЯ ДЗЕНА ГОТОВА!\n📖 Книга: {book['title']}\n🎯 Тип: {mode}\n"
-                  f"📝 Длина: {len(text)} симв.\n🔗 Лента: {PAGES_BASE}/rss.xml")
-    telegram(report_msg + "\n\n" + "\n".join(REPORT))
+    log(f"🔗 Лента: {PAGES_BASE}/rss.xml")
     log("=" * 50)
     log("✅ FINISH: статья готова для Дзена!")
     log("=" * 50)
@@ -208,5 +195,4 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         log(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        telegram("❌ АГЕНТ ДЗЕНА УПАЛ:\n" + "\n".join(REPORT))
         raise
