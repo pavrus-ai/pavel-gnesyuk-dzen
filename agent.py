@@ -5,7 +5,7 @@ from email.utils import formatdate
 GROQ_KEY = os.environ.get("GROQ_KEY", "")
 OR_KEY   = os.environ.get("OPENROUTER_KEY", "")
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TG_CHANNEL = os.environ.get("TELEGRAM_CHANNEL", "")   # @username или -100... вашего канала
+TG_CHANNEL = os.environ.get("TELEGRAM_CHANNEL", "")   # @username вашего канала
 
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 PAGES_BASE = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
@@ -15,7 +15,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v4 (мост Telegram→Дзен)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v5 (пост одним сообщением + мост в Дзен)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -70,7 +70,7 @@ def build_article(book, mode, day):
     t, a, u, s = book["title"], book["about"], book["url"], book["series"]
     base = (f"Напиши развёрнутую статью для Дзена о романе Павла Гнесюка «{t}» (серия «{s}»). "
             f"Текст должен быть ПОЛНОСТЬЮ уникальным, живым, как литературный блог. "
-            f"Требования: 1. ТОЛЬКО русский язык. 2. Длина СТРОГО 2500-4000 символов. "
+            f"Требования: 1. ТОЛЬКО русский язык. 2. Длина СТРОГО 2500-3900 символов. "
             f"3. Заголовок ЗАГЛАВНЫМИ буквами, в заголовке или первом абзаце обязательно название романа «{t}». "
             f"4. Не пиши «как я писал книгу» — пиши как литературный обозреватель. "
             f"5. В конце обязательно: «Читайте роман «{t}» на ЛитРес: {u}». ")
@@ -107,7 +107,7 @@ def esc(s):
     return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
 
 def tg_post_channel(img_bytes, caption, full_text):
-    """Публикует статью в Telegram-канал: фото + полный текст"""
+    """Публикует статью в Telegram-канал: фото + текст одним сообщением"""
     if not TG_TOKEN or not TG_CHANNEL:
         log("⚠️ Нет TELEGRAM_TOKEN/TELEGRAM_CHANNEL — публикация только в RSS")
         return
@@ -135,6 +135,13 @@ def main():
     text, theme = build_article(book, mode, day)
     if len(text) < 2000:
         text += f"\n\nО чём роман «{book['title']}»:\n{book['about']}\n\n📖 Читать на ЛитРес: {book['url']}"
+
+    # Ограничение длины: пост в Telegram одним сообщением (до 4096 символов)
+    if len(text) > 4000:
+        cut = text[:4000]
+        i = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"), cut.rfind("\n"))
+        text = (cut[:i+1] if i > 2000 else cut).rstrip()
+        log(f"✂️ Статья обрезана до {len(text)} симв.")
 
     # --- Картинка ---
     clean_theme = "".join(c for c in theme if c.isalnum() or c.isspace())[:120].strip()
