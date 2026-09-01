@@ -15,7 +15,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v7 (длинные статьи в RSS + тизеры с другими заголовками в TG)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v8 (index.html-витрина + проверка Дзена)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -75,7 +75,6 @@ def trim_text(t, limit):
     return (c[:i+1] if i > limit//2 else c).rstrip()
 
 def build_long_article(book, mode, day):
-    """ДЛИННАЯ статья 2500-4000 для Дзена/RSS со своим заголовком"""
     t, a, u, s = book["title"], book["about"], book["url"], book["series"]
     base = (f"Напиши развёрнутую статью для Дзена о романе Павла Гнесюка «{t}» (серия «{s}»). "
             f"Текст ПОЛНОСТЬЮ уникальный, живой, как литературный блог. "
@@ -110,13 +109,11 @@ def build_long_article(book, mode, day):
     return clean_txt(txt) + f"\n\n{TAGS}", theme
 
 def build_teaser(book, long_title):
-    """ТИЗЕР 800-1000 для Telegram с ДРУГИМ заголовком"""
     t, a, s = book["title"], book["about"], book["series"]
     prompt = (f"Напиши тизер для Telegram-поста о романе Павла Гнесюка «{t}» (серия «{s}»). "
               f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. 2. Первая строка — заголовок ЗАГЛАВНЫМИ, "
               f"без ** и ##, и он ОБЯЗАН отличаться от этого заголовка: «{long_title}». "
-              f"3. Текст 800-1000 символов, интригующий, как анонс. 4. Закончи вопросом или крючком, "
-              f"чтобы читатель захотел открыть полную статью.")
+              f"3. Текст 800-1000 символов, интригующий, как анонс. 4. Закончи вопросом или крючком.")
     txt = ai_text(prompt, minlen=300)
     if not txt:
         log("⚠️ Тизер не создан — беру начало статьи.")
@@ -138,6 +135,36 @@ def tg_post_channel(img_bytes, caption):
         return
     log("✅ Тизер опубликован в Telegram-канал")
 
+def build_index(posts, meta):
+    """Страница-витрина: её Дзен проверит как «Свой сайт»"""
+    cards = ""
+    for it in posts[:30]:
+        cards += f'<a class="card" href="{it["link"]}" target="_blank"><img src="{it["img"]}" alt=""><h3>{it["title"]}</h3></a>\n'
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Павел Гнесюк — литературный блог</title>
+<meta name="description" content="Статьи о романах Павла Гнесюка: Хранители и Тарские легенды.">
+{meta}
+<style>
+body{{font-family:Georgia,serif;background:#141414;color:#eee;margin:0}}
+header{{padding:40px 20px;text-align:center;background:#1e1e1e}}
+h1{{margin:0 0 8px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:20px;padding:20px;max-width:1100px;margin:0 auto}}
+.card{{background:#1e1e1e;border-radius:10px;overflow:hidden;text-decoration:none;color:#eee}}
+.card img{{width:100%;height:150px;object-fit:cover}}
+.card h3{{font-size:15px;padding:12px;margin:0}}
+</style>
+</head>
+<body>
+<header><h1>Павел Гнесюк — литературный блог</h1>
+<p>Романы «Хранители» и «Тарские легенды»: статьи, разборы, цитаты</p></header>
+<div class="grid">{cards}</div>
+</body>
+</html>"""
+
 def main():
     books = json.load(open("books.json", encoding="utf-8"))["books"]
     day = datetime.date.today().toordinal()
@@ -155,10 +182,8 @@ def main():
     teaser = build_teaser(book, long_title)
     if teaser is None:
         teaser = trim_text(long_text, 950)
-    teaser_title = teaser.split("\n")[0][:150]
-    log(f"✂️ Заголовок тизера: {teaser_title}")
+    log(f"✂️ Заголовок тизера: {teaser.split(chr(10))[0][:150]}")
 
-    # Тизер в Telegram: до 1024 с учётом ссылки
     link_part = f"\n\n📖 Читайте на ЛитРес: {book['url']}"
     teaser = trim_text(teaser, 1024 - len(link_part))
     caption = teaser + link_part
@@ -180,7 +205,10 @@ def main():
 
     tg_post_channel(img_bytes, caption)
 
-    # --- RSS: ДЛИННАЯ статья со своим заголовком ---
+    # --- RSS + index.html ---
+    meta = ""
+    if os.path.exists("dzen_meta.txt"):
+        meta = open("dzen_meta.txt", encoding="utf-8").read().strip()
     body_html = esc(long_text).replace("\n", "<br><br>")
     try:
         posts = json.load(open("posts.json", encoding="utf-8"))
@@ -220,9 +248,11 @@ def main():
 </rss>
 """
     open("rss.xml", "w", encoding="utf-8").write(rss)
+    open("index.html", "w", encoding="utf-8").write(build_index(posts, meta))
     log(f"✅ RSS обновлён: статей в ленте: {len(posts)}")
+    log("✅ index.html обновлён (витрина статей)")
     log("=" * 50)
-    log("✅ FINISH: длинная статья → RSS, тизер с другим заголовком → Telegram!")
+    log("✅ FINISH: статья → RSS, тизер → Telegram, витрина → index.html!")
     log("=" * 50)
 
 if __name__ == "__main__":
