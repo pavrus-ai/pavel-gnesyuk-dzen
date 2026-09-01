@@ -5,7 +5,7 @@ from email.utils import formatdate
 GROQ_KEY = os.environ.get("GROQ_KEY", "")
 OR_KEY   = os.environ.get("OPENROUTER_KEY", "")
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TG_CHANNEL = os.environ.get("TELEGRAM_CHANNEL", "")   # @username вашего канала
+TG_CHANNEL = os.environ.get("TELEGRAM_CHANNEL", "")
 
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 PAGES_BASE = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
@@ -15,7 +15,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v5 (пост одним сообщением + мост в Дзен)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v7 (длинные статьи в RSS + тизеры с другими заголовками в TG)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -47,7 +47,7 @@ def ai_openrouter(prompt, model):
     except Exception:
         return None
 
-def ai_text(prompt):
+def ai_text(prompt, minlen=600):
     models = [
         ("groq", "llama-3.3-70b-versatile"),
         ("openrouter", "meta-llama/llama-3.3-70b-instruct:free"),
@@ -58,58 +58,77 @@ def ai_text(prompt):
     for provider, model in models:
         try:
             res = ai_groq(prompt, model) if provider == "groq" else ai_openrouter(prompt, model)
-            if res and len(res) > 1500:
+            if res and len(res) > minlen:
                 log(f"✅ Успех: {provider} ({model}), {len(res)} симв.")
                 return res
         except Exception:
             pass
     return None
 
-def build_article(book, mode, day):
-    """Длинная уникальная статья: сюжет / герои / цитата / мир / интрига"""
+def clean_txt(t):
+    return t.replace("**","").replace("##","").strip()
+
+def trim_text(t, limit):
+    if len(t) <= limit: return t
+    c = t[:limit]
+    i = max(c.rfind("."), c.rfind("!"), c.rfind("?"), c.rfind("\n"))
+    return (c[:i+1] if i > limit//2 else c).rstrip()
+
+def build_long_article(book, mode, day):
+    """ДЛИННАЯ статья 2500-4000 для Дзена/RSS со своим заголовком"""
     t, a, u, s = book["title"], book["about"], book["url"], book["series"]
     base = (f"Напиши развёрнутую статью для Дзена о романе Павла Гнесюка «{t}» (серия «{s}»). "
-            f"Текст должен быть ПОЛНОСТЬЮ уникальным, живым, как литературный блог. "
-            f"Требования: 1. ТОЛЬКО русский язык. 2. Длина СТРОГО 2500-3900 символов. "
-            f"3. Заголовок ЗАГЛАВНЫМИ буквами, в заголовке или первом абзаце обязательно название романа «{t}». "
+            f"Текст ПОЛНОСТЬЮ уникальный, живой, как литературный блог. "
+            f"Требования: 1. ТОЛЬКО русский язык. 2. Длина СТРОГО 2500-4000 символов. "
+            f"3. Первая строка — заголовок ЗАГЛАВНЫМИ буквами, без ** и ##. "
             f"4. Не пиши «как я писал книгу» — пиши как литературный обозреватель. "
             f"5. В конце обязательно: «Читайте роман «{t}» на ЛитРес: {u}». ")
     if mode == "quote" and book.get("fragments"):
         fr = book["fragments"][day % len(book["fragments"])]
-        prompt = (base + f"Тип статьи: РАЗБОР ЦИТАТЫ. Возьми цитату из романа: «{fr}» — "
-                  f"раскрой её смысл, атмосферу, связь с сюжетом ({a}). 3-5 абзацев размышления.")
+        prompt = (base + f"Тип: РАЗБОР ЦИТАТЫ. Цитата: «{fr}» — раскрой смысл, атмосферу, связь с сюжетом ({a}). 4-6 абзацев.")
         theme = f"dramatic scene from novel: {fr[:80]}"
     elif mode == "hero":
-        prompt = (base + f"Тип статьи: ГЕРОИ. Расскажи о главных героях романа, их характерах, "
-                  f"мотивах и внутреннем конфликте, опираясь на сюжет: {a}.")
+        prompt = (base + f"Тип: ГЕРОИ. Характеры, мотивы, внутренний конфликт героев. Сюжет: {a}. 4-6 абзацев.")
         theme = f"portrait of the novel protagonist, {a[:80]}"
     elif mode == "plot":
-        prompt = (base + f"Тип статьи: СЮЖЕТ. Перескажи завязку и развитие интриги БЕЗ спойлеров "
-                  f"концовки, опираясь на: {a}.")
+        prompt = (base + f"Тип: СЮЖЕТ. Завязка и развитие интриги БЕЗ спойлеров концовки. Сюжет: {a}. 4-6 абзацев.")
         theme = f"adventure plot scene, {a[:80]}"
     elif mode == "world":
-        prompt = (base + f"Тип статьи: МИР КНИГИ. Опиши вселенную, атмосферу и место действия романа "
-                  f"(серия «{s}»). Сюжет для опоры: {a}.")
+        prompt = (base + f"Тип: МИР КНИГИ. Вселенная, атмосфера, правила мира серии «{s}». Сюжет: {a}. 4-6 абзацев.")
         theme = f"fantasy world landscape of the novel series, {a[:80]}"
     else:
-        prompt = (base + f"Тип статьи: ИНТРИГА. Расскажи, почему роман «{t}» невозможно отложить: "
-                  f"ключевые тайны и повороты (без спойлеров). Сюжет: {a}.")
+        prompt = (base + f"Тип: ИНТРИГА. Тайны, вопросы, повороты (без спойлеров), сильный призыв в конце. Сюжет: {a}. 4-6 абзацев.")
         theme = f"mysterious intrigue scene with hidden clues, {a[:80]}"
-    txt = ai_text(prompt)
+    txt = ai_text(prompt, minlen=1500)
     if not txt:
-        log("⚠️ ИИ недоступны. Стандартная статья.")
+        log("⚠️ ИИ недоступны. Стандартная длинная статья.")
         txt = (f"РОМАН «{t.upper()}»: ИСТОРИЯ, КОТОРАЯ ЗАТЯГИВАЕТ\n\n{a}\n\n"
-               f"Роман «{t}» из серии «{s}» — захватывающее путешествие, полное тайн и поворотов.\n\n"
+               f"Роман «{t}» из серии «{s}» — захватывающее путешествие, полное тайн и неожиданных поворотов. "
+               f"Герои, которым сопереживаешь, мир, в который веришь, и интрига, которая не отпускает до последней страницы. "
+               f"Каждая глава добавляет новые вопросы, а ответы оказываются совсем не такими, как ждёшь.\n\n"
                f"Читайте роман «{t}» на ЛитРес: {u}")
-    return f"{txt}\n\n{TAGS}", theme
+    return clean_txt(txt) + f"\n\n{TAGS}", theme
+
+def build_teaser(book, long_title):
+    """ТИЗЕР 800-1000 для Telegram с ДРУГИМ заголовком"""
+    t, a, s = book["title"], book["about"], book["series"]
+    prompt = (f"Напиши тизер для Telegram-поста о романе Павла Гнесюка «{t}» (серия «{s}»). "
+              f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. 2. Первая строка — заголовок ЗАГЛАВНЫМИ, "
+              f"без ** и ##, и он ОБЯЗАН отличаться от этого заголовка: «{long_title}». "
+              f"3. Текст 800-1000 символов, интригующий, как анонс. 4. Закончи вопросом или крючком, "
+              f"чтобы читатель захотел открыть полную статью.")
+    txt = ai_text(prompt, minlen=300)
+    if not txt:
+        log("⚠️ Тизер не создан — беру начало статьи.")
+        return None
+    return clean_txt(txt)
 
 def esc(s):
     return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
 
-def tg_post_channel(img_bytes, caption, full_text):
-    """Публикует статью в Telegram-канал: фото + текст одним сообщением"""
+def tg_post_channel(img_bytes, caption):
     if not TG_TOKEN or not TG_CHANNEL:
-        log("⚠️ Нет TELEGRAM_TOKEN/TELEGRAM_CHANNEL — публикация только в RSS")
+        log("⚠️ Нет TELEGRAM_TOKEN/TELEGRAM_CHANNEL — только RSS")
         return
     r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
                       data={"chat_id": TG_CHANNEL, "caption": caption},
@@ -117,10 +136,7 @@ def tg_post_channel(img_bytes, caption, full_text):
     if not r.get("ok"):
         log(f"⚠️ sendPhoto: {str(r)[:100]}")
         return
-    for chunk in [full_text[i:i+4096] for i in range(0, len(full_text), 4096)]:
-        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                      data={"chat_id": TG_CHANNEL, "text": chunk}, timeout=60)
-    log("✅ Опубликовано в Telegram-канал")
+    log("✅ Тизер опубликован в Telegram-канал")
 
 def main():
     books = json.load(open("books.json", encoding="utf-8"))["books"]
@@ -130,18 +146,22 @@ def main():
     mode = modes[day % len(modes)]
     if mode == "quote" and not book.get("fragments"):
         mode = "plot"
-    log(f"📚 Книга дня: «{book['title']}» ({book['series']}) | Тип статьи: {mode}")
+    log(f"📚 Книга дня: «{book['title']}» ({book['series']}) | Тип: {mode}")
 
-    text, theme = build_article(book, mode, day)
-    if len(text) < 2000:
-        text += f"\n\nО чём роман «{book['title']}»:\n{book['about']}\n\n📖 Читать на ЛитРес: {book['url']}"
+    long_text, theme = build_long_article(book, mode, day)
+    long_title = long_text.split("\n")[0][:150]
+    log(f"📰 Заголовок статьи: {long_title}")
 
-    # Ограничение длины: пост в Telegram одним сообщением (до 4096 символов)
-    if len(text) > 4000:
-        cut = text[:4000]
-        i = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"), cut.rfind("\n"))
-        text = (cut[:i+1] if i > 2000 else cut).rstrip()
-        log(f"✂️ Статья обрезана до {len(text)} симв.")
+    teaser = build_teaser(book, long_title)
+    if teaser is None:
+        teaser = trim_text(long_text, 950)
+    teaser_title = teaser.split("\n")[0][:150]
+    log(f"✂️ Заголовок тизера: {teaser_title}")
+
+    # Тизер в Telegram: до 1024 с учётом ссылки
+    link_part = f"\n\n📖 Читайте на ЛитРес: {book['url']}"
+    teaser = trim_text(teaser, 1024 - len(link_part))
+    caption = teaser + link_part
 
     # --- Картинка ---
     clean_theme = "".join(c for c in theme if c.isalnum() or c.isspace())[:120].strip()
@@ -158,21 +178,17 @@ def main():
     img_url = f"{PAGES_BASE}/img/{day}.jpg"
     log(f"✅ Картинка: img/{day}.jpg ({len(img_bytes)} байт)")
 
-    # --- Публикация в Telegram-канал (мост в Дзен) ---
-    lines = text.split("\n")
-    title = lines[0][:150].replace("**","").strip()
-    caption = f"{title}\n\n📖 Читать на ЛитРес: {book['url']}"[:1024]
-    tg_post_channel(img_bytes, caption, text)
+    tg_post_channel(img_bytes, caption)
 
-    # --- RSS (запасная лента) ---
-    body_html = esc(text).replace("\n", "<br><br>")
+    # --- RSS: ДЛИННАЯ статья со своим заголовком ---
+    body_html = esc(long_text).replace("\n", "<br><br>")
     try:
         posts = json.load(open("posts.json", encoding="utf-8"))
     except Exception:
         posts = []
     posts.insert(0, {
         "guid": f"pavel-gnesyuk-{day}",
-        "title": title,
+        "title": long_title,
         "text_html": body_html,
         "img": img_url,
         "size": len(img_bytes),
@@ -206,7 +222,7 @@ def main():
     open("rss.xml", "w", encoding="utf-8").write(rss)
     log(f"✅ RSS обновлён: статей в ленте: {len(posts)}")
     log("=" * 50)
-    log("✅ FINISH: статья ушла в Telegram-канал и RSS!")
+    log("✅ FINISH: длинная статья → RSS, тизер с другим заголовком → Telegram!")
     log("=" * 50)
 
 if __name__ == "__main__":
