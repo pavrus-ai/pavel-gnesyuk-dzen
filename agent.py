@@ -15,7 +15,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v8 (index.html-витрина + проверка Дзена)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v9 (страницы статей на своём сайте)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -135,8 +135,26 @@ def tg_post_channel(img_bytes, caption):
         return
     log("✅ Тизер опубликован в Telegram-канал")
 
+def build_article_page(title, img_url, body_html, litres_url):
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<meta property="og:image" content="{img_url}">
+</head>
+<body style="font-family:Georgia,serif;background:#141414;color:#eee;margin:0;padding:20px">
+<article style="max-width:800px;margin:0 auto">
+<h1>{title}</h1>
+<img src="{img_url}" style="width:100%;border-radius:10px">
+<div>{body_html}</div>
+<p><a href="{litres_url}" style="color:#7ab8ff">📖 Читать роман на ЛитРес</a></p>
+</article>
+</body>
+</html>"""
+
 def build_index(posts, meta):
-    """Страница-витрина: её Дзен проверит как «Свой сайт»"""
     cards = ""
     for it in posts[:30]:
         cards += f'<a class="card" href="{it["link"]}" target="_blank"><img src="{it["img"]}" alt=""><h3>{it["title"]}</h3></a>\n'
@@ -205,11 +223,18 @@ def main():
 
     tg_post_channel(img_bytes, caption)
 
+    # --- Страница статьи на своём сайте ---
+    body_html = esc(long_text).replace("\n", "<br><br>")
+    os.makedirs("a", exist_ok=True)
+    page_path = f"a/{day}.html"
+    open(page_path, "w", encoding="utf-8").write(build_article_page(long_title, img_url, body_html, book["url"]))
+    page_url = f"{PAGES_BASE}/a/{day}.html"
+    log(f"✅ Страница статьи: {page_path}")
+
     # --- RSS + index.html ---
     meta = ""
     if os.path.exists("dzen_meta.txt"):
         meta = open("dzen_meta.txt", encoding="utf-8").read().strip()
-    body_html = esc(long_text).replace("\n", "<br><br>")
     try:
         posts = json.load(open("posts.json", encoding="utf-8"))
     except Exception:
@@ -220,7 +245,7 @@ def main():
         "text_html": body_html,
         "img": img_url,
         "size": len(img_bytes),
-        "link": book["url"],
+        "link": page_url,
         "pubdate": formatdate(time.time(), usegmt=True)
     })
     posts = posts[:30]
@@ -241,7 +266,7 @@ def main():
 <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
 <channel>
   <title>Павел Гнесюк — литературный блог</title>
-  <link>https://dzen.ru/bookpg</link>
+  <link>https://pavrus-ai.github.io/pavel-gnesyuk-dzen/</link>
   <description>Статьи о романах Павла Гнесюка: сюжет, герои, цитаты, миры и интриги.</description>
   <language>ru</language>
 {items}</channel>
@@ -252,7 +277,7 @@ def main():
     log(f"✅ RSS обновлён: статей в ленте: {len(posts)}")
     log("✅ index.html обновлён (витрина статей)")
     log("=" * 50)
-    log("✅ FINISH: статья → RSS, тизер → Telegram, витрина → index.html!")
+    log("✅ FINISH: статья → RSS + страница на сайте, тизер → Telegram!")
     log("=" * 50)
 
 if __name__ == "__main__":
