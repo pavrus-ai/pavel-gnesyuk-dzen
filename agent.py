@@ -163,14 +163,22 @@ def max_api(path, payload=None):
         return None
 
 def max_post_channel(img_bytes, caption):
-    """Публикация в канал мессенджера MAX"""
+    """Публикация в канал MAX: канал берём из списка /chats"""
     if not MAX_TOKEN:
         log("⚠️ Нет MAX_TOKEN — пропуск MAX")
         return
-    log(f"ℹ️ MAX: длина токена {len(MAX_TOKEN)}, первые 3 символа: {MAX_TOKEN[:3]}")
-    if not MAX_CHAT_ID:
-        chats = max_api("/chats")
-        log(f"ℹ️ MAX: список чатов (ищем chat_id канала): {str(chats)[:500]}")
+    chat_id = MAX_CHAT_ID
+    chats = max_api("/chats")
+    if chats and chats.get("chats"):
+        for c in chats["chats"]:
+            if c.get("type") == "channel":
+                chat_id = str(c.get("chat_id"))
+                log(f"ℹ️ MAX: канал из списка: {chat_id} «{c.get('title')}»")
+                break
+    else:
+        log(f"ℹ️ MAX: список чатов пуст: {str(chats)[:200]}")
+    if not chat_id:
+        log("⚠️ MAX: нет канала для публикации")
         return
     att = None
     up = max_api("/uploads", {"type": "image"})
@@ -185,7 +193,7 @@ def max_post_channel(img_bytes, caption):
             except Exception as e:
                 log(f"⚠️ MAX upload: {e}")
     time.sleep(2)
-    body = {"chat_id": MAX_CHAT_ID, "text": caption}
+    body = {"chat_id": chat_id, "text": caption}
     if att:
         body["attachments"] = att
     res = max_api("/messages", body)
