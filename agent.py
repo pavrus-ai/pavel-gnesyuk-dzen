@@ -19,7 +19,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v18 (сцена для картинки по тексту тизера)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v19 (яркие photorealistic сцены + уникальные имена картинок + таймауты 45с)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -31,7 +31,7 @@ def ai_groq(prompt, model, suffix=RU):
         r = requests.post("https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_KEY}"},
             json={"model": model, "temperature": 0.8,
-                  "messages": [{"role": "user", "content": prompt + suffix}]}, timeout=90).json()
+                  "messages": [{"role": "user", "content": prompt + suffix}]}, timeout=45).json()
         if "error" in r: return None
         return _extract(r)
     except Exception:
@@ -43,7 +43,7 @@ def ai_openrouter(prompt, model, suffix=RU):
         r = requests.post("https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
             json={"model": model, "temperature": 0.8,
-                  "messages": [{"role": "user", "content": prompt + suffix}]}, timeout=90).json()
+                  "messages": [{"role": "user", "content": prompt + suffix}]}, timeout=45).json()
         if "error" in r: return None
         return _extract(r)
     except Exception:
@@ -68,7 +68,6 @@ def ai_text(prompt, minlen=600):
     return None
 
 def ai_scene(prompt):
-    """Короткая сцена для картинки — БЕЗ принудительного русского"""
     models = [
         ("groq", "llama-3.3-70b-versatile"),
         ("openrouter", "meta-llama/llama-3.3-70b-instruct:free"),
@@ -105,19 +104,19 @@ def build_long_article(book, mode, day):
     if mode == "quote" and book.get("fragments"):
         fr = book["fragments"][day % len(book["fragments"])]
         prompt = (base + f"Тип: РАЗБОР ЦИТАТЫ. Цитата: «{fr}» — раскрой смысл, атмосферу, связь с сюжетом ({a}). 4-6 абзацев.")
-        theme = f"dramatic symbolic scene with ancient flame and shadows: {fr[:60]}"
+        theme = f"dramatic symbolic scene with ancient flame and golden light: {fr[:60]}"
     elif mode == "hero":
         prompt = (base + f"Тип: ГЕРОИ. Характеры, мотивы, внутренний конфликт героев. Сюжет: {a}. 4-6 абзацев.")
-        theme = f"ancient sword and dark cloak lying on stone altar, {a[:60]}"
+        theme = f"ancient sword and dark cloak on sunlit stone altar, {a[:60]}"
     elif mode == "plot":
         prompt = (base + f"Тип: СЮЖЕТ. Завязка и развитие интриги БЕЗ спойлеров концовки. Сюжет: {a}. 4-6 абзацев.")
-        theme = f"misty mountain path leading to ancient fortress, {a[:60]}"
+        theme = f"sunlit mountain path leading to shining ancient fortress, {a[:60]}"
     elif mode == "world":
         prompt = (base + f"Тип: МИР КНИГИ. Вселенная, атмосфера, правила мира серии «{s}». Сюжет: {a}. 4-6 абзацев.")
-        theme = f"epic fantasy landscape with ancient ruins and dramatic sky, {a[:60]}"
+        theme = f"epic fantasy landscape with golden sky and ancient ruins, {a[:60]}"
     else:
         prompt = (base + f"Тип: ИНТРИГА. Тайны, вопросы, повороты (без спойлеров), сильный призыв в конце. Сюжет: {a}. 4-6 абзацев.")
-        theme = f"candlelit desk with old map and mysterious artifacts, {a[:60]}"
+        theme = f"warm candlelit desk with old map and shining artifacts, {a[:60]}"
     txt = ai_text(prompt, minlen=1500)
     if not txt:
         log("⚠️ ИИ недоступны. Стандартная длинная статья.")
@@ -141,10 +140,11 @@ def build_teaser(book, long_title):
     return clean_txt(txt)
 
 def build_scene(teaser_text):
-    """Динамичная сцена для иллюстрации — по тексту тизера"""
     prompt = (f"По этому тексту придумай ОДНУ динамичную сцену для иллюстрации. "
               f"Верни ТОЛЬКО одно предложение на АНГЛИЙСКОМ (15-25 слов): кто и что делает в кадре, "
               f"где происходит, атмосфера и свет. Люди — в действии, в полный рост, НЕ портрет. "
+              f"Сцена должна быть СВЕТЛОЙ и КРАСОЧНОЙ: дневной или тёплый золотой свет, яркие цвета, "
+              f"никакого тёмного мрачного фэнтези. "
               f"Текст: {teaser_text[:900]}")
     scene = ai_scene(prompt)
     if scene:
@@ -167,7 +167,6 @@ def tg_post_channel(img_bytes, caption):
     log("✅ Тизер опубликован в Telegram-канал")
 
 def max_api(path, payload=None, params=None):
-    """MAX: токен в заголовке Authorization, параметры — в URL"""
     headers = {"Authorization": MAX_TOKEN}
     last_err = ""
     for host in MAX_HOSTS:
@@ -190,7 +189,6 @@ def max_api(path, payload=None, params=None):
     return None
 
 def max_post_channel(img_bytes, caption, img_url):
-    """Публикация в канал MAX: картинка по прямой ссылке с сайта"""
     if not MAX_TOKEN:
         log("⚠️ Нет MAX_TOKEN — пропуск MAX")
         return
@@ -309,21 +307,22 @@ def main():
     scene = build_scene(teaser)
     base_img = scene if scene else theme
     clean_img = "".join(c for c in base_img if c.isalnum() or c.isspace() or c in ".,-")[:220].strip()
-    p = ("Cinematic dynamic scene for russian fantasy novel article, "
-         + clean_img + ", full-body figures in action, no close-up portraits, "
-         "dramatic light, no text")
+    p = ("Photorealistic cinematic movie still for russian fantasy novel article, "
+         + clean_img + ", bright vivid colors, beautiful epic composition, warm golden daylight, "
+         "highly detailed, full-body figures in action, no close-up portraits, no text")
     run_no = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
     seed = day + 2000000 + (run_no % 100)
+    fname = f"img/{day}_{run_no % 1000}.jpg"
     url = (POLLINATIONS_API + requests.utils.quote(p) + f"?nologo=true&seed={seed}")
     log("Скачивание картинки...")
     r = requests.get(url, timeout=180)
     r.raise_for_status()
     img_bytes = r.content
     os.makedirs("img", exist_ok=True)
-    with open(f"img/{day}.jpg", "wb") as f:
+    with open(fname, "wb") as f:
         f.write(img_bytes)
-    img_url = f"{PAGES_BASE}/img/{day}.jpg"
-    log(f"✅ Картинка: img/{day}.jpg ({len(img_bytes)} байт)")
+    img_url = f"{PAGES_BASE}/{fname}"
+    log(f"✅ Картинка: {fname} ({len(img_bytes)} байт)")
 
     # --- Публикации в мессенджеры ---
     tg_post_channel(img_bytes, caption)
