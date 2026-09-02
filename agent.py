@@ -6,16 +6,19 @@ GROQ_KEY = os.environ.get("GROQ_KEY", "")
 OR_KEY   = os.environ.get("OPENROUTER_KEY", "")
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHANNEL = os.environ.get("TELEGRAM_CHANNEL", "")
+MAX_TOKEN = os.environ.get("MAX_TOKEN", "")
+MAX_CHAT_ID = os.environ.get("MAX_CHAT_ID", "")
 
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 PAGES_BASE = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
+MAX_API = "https://botapi.max.ru"
 TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
 REPORT = []
 
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v9 (страницы статей на своём сайте)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v10 (Telegram + MAX + RSS)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -110,7 +113,7 @@ def build_long_article(book, mode, day):
 
 def build_teaser(book, long_title):
     t, a, s = book["title"], book["about"], book["series"]
-    prompt = (f"Напиши тизер для Telegram-поста о романе Павла Гнесюка «{t}» (серия «{s}»). "
+    prompt = (f"Напиши тизер для поста о романе Павла Гнесюка «{t}» (серия «{s}»). "
               f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. 2. Первая строка — заголовок ЗАГЛАВНЫМИ, "
               f"без ** и ##, и он ОБЯЗАН отличаться от этого заголовка: «{long_title}». "
               f"3. Текст 800-1000 символов, интригующий, как анонс. 4. Закончи вопросом или крючком.")
@@ -125,15 +128,48 @@ def esc(s):
 
 def tg_post_channel(img_bytes, caption):
     if not TG_TOKEN or not TG_CHANNEL:
-        log("⚠️ Нет TELEGRAM_TOKEN/TELEGRAM_CHANNEL — только RSS")
+        log("⚠️ Нет TELEGRAM_TOKEN/TELEGRAM_CHANNEL — пропуск Telegram")
         return
     r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
                       data={"chat_id": TG_CHANNEL, "caption": caption},
                       files={"photo": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120).json()
     if not r.get("ok"):
-        log(f"⚠️ sendPhoto: {str(r)[:100]}")
+        log(f"⚠️ TG sendPhoto: {str(r)[:100]}")
         return
     log("✅ Тизер опубликован в Telegram-канал")
+
+def max_post_channel(img_bytes, caption):
+    """Публикация в канал мессенджера MAX"""
+    if not MAX_TOKEN:
+        log("⚠️ Нет MAX_TOKEN — пропуск MAX")
+        return
+    headers = {"Authorization": f"Bearer {MAX_TOKEN}"}
+    if not MAX_CHAT_ID:
+        try:
+            r = requests.get(f"{MAX_API}/chats", headers=headers, timeout=30).json()
+            log(f"ℹ️ MAX: список чатов (скопируйте chat_id канала): {str(r)[:500]}")
+        except Exception as e:
+            log(f"⚠️ MAX /chats ошибка: {e}")
+        return
+    att = None
+    try:
+        up = requests.post(f"{MAX_API}/uploads", headers=headers, json={"type": "image"}, timeout=30).json()
+        up_url = up.get("url") or up.get("uploadUrl")
+        up_token = up.get("token") or up.get("photoId")
+        if up_url and up_token:
+            requests.post(up_url, files={"file": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120)
+            att = [{"type": "image", "payload": {"token": up_token}}]
+            log("✅ MAX: картинка загружена")
+    except Exception as e:
+        log(f"⚠️ MAX upload: {e}")
+    body = {"chat_id": MAX_CHAT_ID, "text": caption}
+    if att:
+        body["attachments"] = att
+    try:
+        r = requests.post(f"{MAX_API}/messages", headers=headers, json=body, timeout=60).json()
+        log(f"✅ MAX: ответ отправки: {str(r)[:150]}")
+    except Exception as e:
+        log(f"⚠️ MAX messages: {e}")
 
 def build_article_page(title, img_url, body_html, litres_url):
     return f"""<!DOCTYPE html>
@@ -221,7 +257,9 @@ def main():
     img_url = f"{PAGES_BASE}/img/{day}.jpg"
     log(f"✅ Картинка: img/{day}.jpg ({len(img_bytes)} байт)")
 
+    # --- Публикации в мессенджеры ---
     tg_post_channel(img_bytes, caption)
+    max_post_channel(img_bytes, caption)
 
     # --- Страница статьи на своём сайте ---
     body_html = esc(long_text).replace("\n", "<br><br>")
@@ -277,7 +315,7 @@ def main():
     log(f"✅ RSS обновлён: статей в ленте: {len(posts)}")
     log("✅ index.html обновлён (витрина статей)")
     log("=" * 50)
-    log("✅ FINISH: статья → RSS + страница на сайте, тизер → Telegram!")
+    log("✅ FINISH: статья → RSS+сайт, тизер → Telegram и MAX!")
     log("=" * 50)
 
 if __name__ == "__main__":
