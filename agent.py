@@ -18,7 +18,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v16 (chat_id в URL + новый домен MAX)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v17 (картинка в MAX по прямой ссылке)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -139,7 +139,7 @@ def tg_post_channel(img_bytes, caption):
     log("✅ Тизер опубликован в Telegram-канал")
 
 def max_api(path, payload=None, params=None):
-    """MAX: токен в заголовке Authorization, параметры (chat_id и т.п.) — в URL"""
+    """MAX: токен в заголовке Authorization, параметры — в URL"""
     headers = {"Authorization": MAX_TOKEN}
     last_err = ""
     for host in MAX_HOSTS:
@@ -161,8 +161,8 @@ def max_api(path, payload=None, params=None):
     log(f"⚠️ MAX {path}: {last_err}")
     return None
 
-def max_post_channel(img_bytes, caption):
-    """Публикация в канал MAX: chat_id передаётся в URL"""
+def max_post_channel(img_bytes, caption, img_url):
+    """Публикация в канал MAX: картинка по прямой ссылке с сайта"""
     if not MAX_TOKEN:
         log("⚠️ Нет MAX_TOKEN — пропуск MAX")
         return
@@ -179,22 +179,32 @@ def max_post_channel(img_bytes, caption):
     if chat_id is None:
         log("⚠️ MAX: нет канала для публикации")
         return
+    # Способ 1: картинка по прямой ссылке (официально поддерживается для image)
+    body = {"text": caption,
+            "attachments": [{"type": "image", "payload": {"url": img_url}}],
+            "disable_link_preview": True}
+    res = max_api("/messages", payload=body, params={"chat_id": chat_id})
+    if res and res.get("message"):
+        log("✅ MAX: пост с картинкой отправлен (по ссылке)")
+        return
+    log(f"⚠️ MAX: вложение по ссылке не прошло: {str(res)[:120]} — пробую загрузку")
+    # Способ 2: загрузка через /uploads (поле data, токен из ответа загрузки)
     att = None
-    up = max_api("/uploads", payload={"type": "image"}, params={"type": "image"})
-    if up:
-        up_url = up.get("url") or up.get("uploadUrl")
-        up_token = up.get("token") or up.get("photoId")
-        if up_url and up_token:
-            try:
-                requests.post(up_url, files={"file": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120)
-                att = [{"type": "image", "payload": {"token": up_token}}]
-                log("✅ MAX: картинка загружена")
-            except Exception as e:
-                log(f"⚠️ MAX upload: {e}")
-    time.sleep(1)
+    up = max_api("/uploads", params={"type": "image"})
+    if up and up.get("url"):
+        try:
+            r = requests.post(up["url"], files={"data": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120)
+            tok = r.json().get("token")
+            if tok:
+                att = [{"type": "image", "payload": {"token": tok}}]
+                log("✅ MAX: картинка загружена через /uploads")
+        except Exception as e:
+            log(f"⚠️ MAX upload: {e}")
+    time.sleep(2)
     body = {"text": caption}
     if att:
         body["attachments"] = att
+        body["disable_link_preview"] = True
     res = max_api("/messages", payload=body, params={"chat_id": chat_id})
     log(f"✅ MAX: ответ отправки: {str(res)[:150]}")
 
@@ -288,7 +298,7 @@ def main():
 
     # --- Публикации в мессенджеры ---
     tg_post_channel(img_bytes, caption)
-    max_post_channel(img_bytes, caption)
+    max_post_channel(img_bytes, caption, img_url)
 
     # --- Страница статьи на своём сайте ---
     body_html = esc(long_text).replace("\n", "<br><br>")
