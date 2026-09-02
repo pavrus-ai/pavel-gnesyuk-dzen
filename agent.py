@@ -18,7 +18,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v10 (Telegram + MAX + RSS)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v11 (Telegram + MAX с перебором авторизации + RSS)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -138,38 +138,65 @@ def tg_post_channel(img_bytes, caption):
         return
     log("✅ Тизер опубликован в Telegram-канал")
 
+def max_api(path, payload=None):
+    """Пробует все способы авторизации MAX"""
+    variants = [
+        {"Authorization": f"Bearer {MAX_TOKEN}"},
+        {"Authorization": MAX_TOKEN},
+        {},
+    ]
+    for i, headers in enumerate(variants):
+        try:
+            if payload is not None:
+                r = requests.post(f"{MAX_API}{path}", headers=headers, json=payload, timeout=30)
+            else:
+                r = requests.get(f"{MAX_API}{path}", headers=headers, timeout=30)
+            j = r.json()
+            if r.status_code == 200 and j.get("code") != "verify.token":
+                log(f"✅ MAX: авторизация вариант {i+1} работает")
+                return j
+        except Exception:
+            pass
+    try:
+        if payload is not None:
+            r = requests.post(f"{MAX_API}{path}?token={MAX_TOKEN}", json=payload, timeout=30)
+        else:
+            r = requests.get(f"{MAX_API}{path}?token={MAX_TOKEN}", timeout=30)
+        j = r.json()
+        if j.get("code") != "verify.token":
+            log("✅ MAX: авторизация через ?token= работает")
+            return j
+        log(f"⚠️ MAX: токен отклонён всеми способами: {str(j)[:150]}")
+    except Exception as e:
+        log(f"⚠️ MAX: {e}")
+    return None
+
 def max_post_channel(img_bytes, caption):
     """Публикация в канал мессенджера MAX"""
     if not MAX_TOKEN:
         log("⚠️ Нет MAX_TOKEN — пропуск MAX")
         return
-    headers = {"Authorization": f"Bearer {MAX_TOKEN}"}
     if not MAX_CHAT_ID:
-        try:
-            r = requests.get(f"{MAX_API}/chats", headers=headers, timeout=30).json()
-            log(f"ℹ️ MAX: список чатов (скопируйте chat_id канала): {str(r)[:500]}")
-        except Exception as e:
-            log(f"⚠️ MAX /chats ошибка: {e}")
+        chats = max_api("/chats")
+        log(f"ℹ️ MAX: список чатов (ищем chat_id канала): {str(chats)[:500]}")
         return
     att = None
-    try:
-        up = requests.post(f"{MAX_API}/uploads", headers=headers, json={"type": "image"}, timeout=30).json()
+    up = max_api("/uploads", {"type": "image"})
+    if up:
         up_url = up.get("url") or up.get("uploadUrl")
         up_token = up.get("token") or up.get("photoId")
         if up_url and up_token:
-            requests.post(up_url, files={"file": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120)
-            att = [{"type": "image", "payload": {"token": up_token}}]
-            log("✅ MAX: картинка загружена")
-    except Exception as e:
-        log(f"⚠️ MAX upload: {e}")
+            try:
+                requests.post(up_url, files={"file": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120)
+                att = [{"type": "image", "payload": {"token": up_token}}]
+                log("✅ MAX: картинка загружена")
+            except Exception as e:
+                log(f"⚠️ MAX upload: {e}")
     body = {"chat_id": MAX_CHAT_ID, "text": caption}
     if att:
         body["attachments"] = att
-    try:
-        r = requests.post(f"{MAX_API}/messages", headers=headers, json=body, timeout=60).json()
-        log(f"✅ MAX: ответ отправки: {str(r)[:150]}")
-    except Exception as e:
-        log(f"⚠️ MAX messages: {e}")
+    res = max_api("/messages", body)
+    log(f"✅ MAX: ответ отправки: {str(res)[:150]}")
 
 def build_article_page(title, img_url, body_html, litres_url):
     return f"""<!DOCTYPE html>
