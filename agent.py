@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-import os, json, datetime, requests, time
+import os, json, datetime, requests, time, urllib3
 from email.utils import formatdate
+urllib3.disable_warnings()
 
 GROQ_KEY = os.environ.get("GROQ_KEY", "")
 OR_KEY   = os.environ.get("OPENROUTER_KEY", "")
@@ -19,7 +20,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v19 (яркие photorealistic сцены + уникальные имена картинок + таймауты 45с)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v20 (MAX: загрузка через /uploads + verify=False)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -168,13 +169,13 @@ def tg_post_channel(img_bytes, caption):
 
 def max_api(path, payload=None, params=None):
     headers = {"Authorization": MAX_TOKEN}
-    last_err = ""
+    errs = []
     for host in MAX_HOSTS:
         try:
             if payload is not None:
-                r = requests.post(host + path, headers=headers, params=params, json=payload, timeout=30)
+                r = requests.post(host + path, headers=headers, params=params, json=payload, timeout=30, verify=False)
             else:
-                r = requests.get(host + path, headers=headers, params=params, timeout=30)
+                r = requests.get(host + path, headers=headers, params=params, timeout=30, verify=False)
             j = r.json()
             if j.get("code") == "too.many.requests":
                 log("⏳ MAX: лимит запросов, жду 4 сек...")
@@ -182,10 +183,10 @@ def max_api(path, payload=None, params=None):
                 continue
             if r.status_code == 200:
                 return j
-            last_err = f"{host} → {r.status_code} {str(j)[:100]}"
+            errs.append(f"{host}:{r.status_code}:{str(j)[:60]}")
         except Exception as e:
-            last_err = f"{host} → {e}"
-    log(f"⚠️ MAX {path}: {last_err}")
+            errs.append(f"{host}:{str(e)[:60]}")
+    log(f"⚠️ MAX {path}: {' | '.join(errs)}")
     return None
 
 def max_post_channel(img_bytes, caption, img_url):
@@ -205,31 +206,33 @@ def max_post_channel(img_bytes, caption, img_url):
     if chat_id is None:
         log("⚠️ MAX: нет канала для публикации")
         return
-    body = {"text": caption,
-            "attachments": [{"type": "image", "payload": {"url": img_url}}],
-            "disable_link_preview": True}
-    res = max_api("/messages", payload=body, params={"chat_id": chat_id})
-    if res and res.get("message"):
-        log("✅ MAX: пост с картинкой отправлен (по ссылке)")
-        return
-    log(f"⚠️ MAX: вложение по ссылке не прошло: {str(res)[:120]} — пробую загрузку")
+    # Способ 1: загрузка через /uploads (не зависит от сайта)
     att = None
     up = max_api("/uploads", params={"type": "image"})
     if up and up.get("url"):
         try:
-            r = requests.post(up["url"], files={"data": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120)
+            r = requests.post(up["url"], files={"data": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120, verify=False)
             tok = r.json().get("token")
             if tok:
                 att = [{"type": "image", "payload": {"token": tok}}]
                 log("✅ MAX: картинка загружена через /uploads")
         except Exception as e:
             log(f"⚠️ MAX upload: {e}")
-    time.sleep(2)
     body = {"text": caption}
     if att:
         body["attachments"] = att
         body["disable_link_preview"] = True
+    else:
+        # Способ 2: ссылка (может быть ещё не доступна, но пробуем)
+        body["attachments"] = [{"type": "image", "payload": {"url": img_url}}]
+        body["disable_link_preview"] = True
     res = max_api("/messages", payload=body, params={"chat_id": chat_id})
+    if res and res.get("message"):
+        log("✅ MAX: пост с картинкой отправлен")
+        return
+    # Способ 3: только текст
+    log(f"⚠️ MAX: с картинкой не вышло ({str(res)[:80]}) — шлю текст")
+    res = max_api("/messages", payload={"text": caption}, params={"chat_id": chat_id})
     log(f"✅ MAX: ответ отправки: {str(res)[:150]}")
 
 def build_article_page(title, img_url, body_html, litres_url):
