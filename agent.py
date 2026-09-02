@@ -13,38 +13,37 @@ POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 PAGES_BASE = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
 MAX_HOSTS = ["https://platform-api2.max.ru", "https://botapi.max.ru"]
 TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
+RU = "\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
 REPORT = []
 
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v17 (картинка в MAX по прямой ссылке)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v18 (сцена для картинки по тексту тизера)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError): return None
 
-def ai_groq(prompt, model):
+def ai_groq(prompt, model, suffix=RU):
     if not GROQ_KEY: return None
-    full_prompt = f"{prompt}\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
     try:
         r = requests.post("https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_KEY}"},
             json={"model": model, "temperature": 0.8,
-                  "messages": [{"role": "user", "content": full_prompt}]}, timeout=90).json()
+                  "messages": [{"role": "user", "content": prompt + suffix}]}, timeout=90).json()
         if "error" in r: return None
         return _extract(r)
     except Exception:
         return None
 
-def ai_openrouter(prompt, model):
+def ai_openrouter(prompt, model, suffix=RU):
     if not OR_KEY: return None
-    full_prompt = f"{prompt}\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
     try:
         r = requests.post("https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
             json={"model": model, "temperature": 0.8,
-                  "messages": [{"role": "user", "content": full_prompt}]}, timeout=90).json()
+                  "messages": [{"role": "user", "content": prompt + suffix}]}, timeout=90).json()
         if "error" in r: return None
         return _extract(r)
     except Exception:
@@ -64,6 +63,24 @@ def ai_text(prompt, minlen=600):
             if res and len(res) > minlen:
                 log(f"✅ Успех: {provider} ({model}), {len(res)} симв.")
                 return res
+        except Exception:
+            pass
+    return None
+
+def ai_scene(prompt):
+    """Короткая сцена для картинки — БЕЗ принудительного русского"""
+    models = [
+        ("groq", "llama-3.3-70b-versatile"),
+        ("openrouter", "meta-llama/llama-3.3-70b-instruct:free"),
+        ("openrouter", "google/gemma-3-27b-it:free"),
+        ("openrouter", "deepseek/deepseek-chat-v3-0324:free"),
+        ("openrouter", "auto")
+    ]
+    for provider, model in models:
+        try:
+            res = ai_groq(prompt, model, suffix="") if provider == "groq" else ai_openrouter(prompt, model, suffix="")
+            if res and len(res) > 15:
+                return res.split("\n")[0].strip().strip('"')[:300]
         except Exception:
             pass
     return None
@@ -88,19 +105,19 @@ def build_long_article(book, mode, day):
     if mode == "quote" and book.get("fragments"):
         fr = book["fragments"][day % len(book["fragments"])]
         prompt = (base + f"Тип: РАЗБОР ЦИТАТЫ. Цитата: «{fr}» — раскрой смысл, атмосферу, связь с сюжетом ({a}). 4-6 абзацев.")
-        theme = f"dramatic scene from novel: {fr[:80]}"
+        theme = f"dramatic symbolic scene with ancient flame and shadows: {fr[:60]}"
     elif mode == "hero":
         prompt = (base + f"Тип: ГЕРОИ. Характеры, мотивы, внутренний конфликт героев. Сюжет: {a}. 4-6 абзацев.")
-        theme = f"portrait of the novel protagonist, {a[:80]}"
+        theme = f"ancient sword and dark cloak lying on stone altar, {a[:60]}"
     elif mode == "plot":
         prompt = (base + f"Тип: СЮЖЕТ. Завязка и развитие интриги БЕЗ спойлеров концовки. Сюжет: {a}. 4-6 абзацев.")
-        theme = f"adventure plot scene, {a[:80]}"
+        theme = f"misty mountain path leading to ancient fortress, {a[:60]}"
     elif mode == "world":
         prompt = (base + f"Тип: МИР КНИГИ. Вселенная, атмосфера, правила мира серии «{s}». Сюжет: {a}. 4-6 абзацев.")
-        theme = f"fantasy world landscape of the novel series, {a[:80]}"
+        theme = f"epic fantasy landscape with ancient ruins and dramatic sky, {a[:60]}"
     else:
         prompt = (base + f"Тип: ИНТРИГА. Тайны, вопросы, повороты (без спойлеров), сильный призыв в конце. Сюжет: {a}. 4-6 абзацев.")
-        theme = f"mysterious intrigue scene with hidden clues, {a[:80]}"
+        theme = f"candlelit desk with old map and mysterious artifacts, {a[:60]}"
     txt = ai_text(prompt, minlen=1500)
     if not txt:
         log("⚠️ ИИ недоступны. Стандартная длинная статья.")
@@ -122,6 +139,17 @@ def build_teaser(book, long_title):
         log("⚠️ Тизер не создан — беру начало статьи.")
         return None
     return clean_txt(txt)
+
+def build_scene(teaser_text):
+    """Динамичная сцена для иллюстрации — по тексту тизера"""
+    prompt = (f"По этому тексту придумай ОДНУ динамичную сцену для иллюстрации. "
+              f"Верни ТОЛЬКО одно предложение на АНГЛИЙСКОМ (15-25 слов): кто и что делает в кадре, "
+              f"где происходит, атмосфера и свет. Люди — в действии, в полный рост, НЕ портрет. "
+              f"Текст: {teaser_text[:900]}")
+    scene = ai_scene(prompt)
+    if scene:
+        log(f"🎨 Сцена для картинки: {scene[:120]}")
+    return scene
 
 def esc(s):
     return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
@@ -179,7 +207,6 @@ def max_post_channel(img_bytes, caption, img_url):
     if chat_id is None:
         log("⚠️ MAX: нет канала для публикации")
         return
-    # Способ 1: картинка по прямой ссылке (официально поддерживается для image)
     body = {"text": caption,
             "attachments": [{"type": "image", "payload": {"url": img_url}}],
             "disable_link_preview": True}
@@ -188,7 +215,6 @@ def max_post_channel(img_bytes, caption, img_url):
         log("✅ MAX: пост с картинкой отправлен (по ссылке)")
         return
     log(f"⚠️ MAX: вложение по ссылке не прошло: {str(res)[:120]} — пробую загрузку")
-    # Способ 2: загрузка через /uploads (поле data, токен из ответа загрузки)
     att = None
     up = max_api("/uploads", params={"type": "image"})
     if up and up.get("url"):
@@ -276,13 +302,16 @@ def main():
     log(f"✂️ Заголовок тизера: {teaser.split(chr(10))[0][:150]}")
 
     link_part = f"\n\n📖 Читайте на ЛитРес: {book['url']}"
-    teaser = trim_text(teaser, 1024 - len(link_part))
-    caption = teaser + link_part
+    teaser_trim = trim_text(teaser, 1024 - len(link_part))
+    caption = teaser_trim + link_part
 
-    # --- Картинка (новая при каждом запуске) ---
-    clean_theme = "".join(c for c in theme if c.isalnum() or c.isspace())[:120].strip()
-    p = ("Editorial illustration for russian literary article, "
-         + clean_theme + ", artistic dramatic style, cinematic light, no text")
+    # --- Сцена для картинки по тексту тизера ---
+    scene = build_scene(teaser)
+    base_img = scene if scene else theme
+    clean_img = "".join(c for c in base_img if c.isalnum() or c.isspace() or c in ".,-")[:220].strip()
+    p = ("Cinematic dynamic scene for russian fantasy novel article, "
+         + clean_img + ", full-body figures in action, no close-up portraits, "
+         "dramatic light, no text")
     run_no = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
     seed = day + 2000000 + (run_no % 100)
     url = (POLLINATIONS_API + requests.utils.quote(p) + f"?nologo=true&seed={seed}")
