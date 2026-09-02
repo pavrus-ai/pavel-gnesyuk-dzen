@@ -20,7 +20,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v20 (MAX: загрузка через /uploads + verify=False)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v21 (flux 1280x960 резкие сцены + MAX по прогретой ссылке)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -189,7 +189,8 @@ def max_api(path, payload=None, params=None):
     log(f"⚠️ MAX {path}: {' | '.join(errs)}")
     return None
 
-def max_post_channel(img_bytes, caption, img_url):
+def max_post_channel(img_bytes, caption, img_url, poll_url):
+    """Пост в MAX: картинка внешней ссылкой (pollinations уже закэширован нами)"""
     if not MAX_TOKEN:
         log("⚠️ Нет MAX_TOKEN — пропуск MAX")
         return
@@ -206,34 +207,18 @@ def max_post_channel(img_bytes, caption, img_url):
     if chat_id is None:
         log("⚠️ MAX: нет канала для публикации")
         return
-    # Способ 1: загрузка через /uploads (не зависит от сайта)
-    att = None
-    up = max_api("/uploads", params={"type": "image"})
-    if up and up.get("url"):
-        try:
-            r = requests.post(up["url"], files={"data": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120, verify=False)
-            tok = r.json().get("token")
-            if tok:
-                att = [{"type": "image", "payload": {"token": tok}}]
-                log("✅ MAX: картинка загружена через /uploads")
-        except Exception as e:
-            log(f"⚠️ MAX upload: {e}")
-    body = {"text": caption}
-    if att:
-        body["attachments"] = att
-        body["disable_link_preview"] = True
-    else:
-        # Способ 2: ссылка (может быть ещё не доступна, но пробуем)
-        body["attachments"] = [{"type": "image", "payload": {"url": img_url}}]
-        body["disable_link_preview"] = True
-    res = max_api("/messages", payload=body, params={"chat_id": chat_id})
-    if res and res.get("message"):
-        log("✅ MAX: пост с картинкой отправлен")
-        return
-    # Способ 3: только текст
-    log(f"⚠️ MAX: с картинкой не вышло ({str(res)[:80]}) — шлю текст")
+    for i, u in enumerate([poll_url, img_url], 1):
+        body = {"text": caption,
+                "attachments": [{"type": "image", "payload": {"url": u}}],
+                "disable_link_preview": True}
+        res = max_api("/messages", payload=body, params={"chat_id": chat_id})
+        if res and res.get("message"):
+            log(f"✅ MAX: пост с картинкой отправлен (вариант {i})")
+            return
+        log(f"⚠️ MAX: вариант {i} не прошёл: {str(res)[:80]}")
+        time.sleep(2)
     res = max_api("/messages", payload={"text": caption}, params={"chat_id": chat_id})
-    log(f"✅ MAX: ответ отправки: {str(res)[:150]}")
+    log(f"✅ MAX: отправлен текст: {str(res)[:100]}")
 
 def build_article_page(title, img_url, body_html, litres_url):
     return f"""<!DOCTYPE html>
@@ -312,13 +297,14 @@ def main():
     clean_img = "".join(c for c in base_img if c.isalnum() or c.isspace() or c in ".,-")[:220].strip()
     p = ("Photorealistic cinematic movie still for russian fantasy novel article, "
          + clean_img + ", bright vivid colors, beautiful epic composition, warm golden daylight, "
-         "highly detailed, full-body figures in action, no close-up portraits, no text")
+         "highly detailed, sharp focus, crisp edges, high resolution, full-body figures in action, "
+         "no close-up portraits, no text")
     run_no = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
     seed = day + 2000000 + (run_no % 100)
     fname = f"img/{day}_{run_no % 1000}.jpg"
-    url = (POLLINATIONS_API + requests.utils.quote(p) + f"?nologo=true&seed={seed}")
-    log("Скачивание картинки...")
-    r = requests.get(url, timeout=180)
+    url = (POLLINATIONS_API + requests.utils.quote(p) + f"?nologo=true&seed={seed}&model=flux&width=1280&height=960")
+    log("Скачивание картинки (flux, 1280x960)...")
+    r = requests.get(url, timeout=240)
     r.raise_for_status()
     img_bytes = r.content
     os.makedirs("img", exist_ok=True)
@@ -329,7 +315,7 @@ def main():
 
     # --- Публикации в мессенджеры ---
     tg_post_channel(img_bytes, caption)
-    max_post_channel(img_bytes, caption, img_url)
+    max_post_channel(img_bytes, caption, img_url, url)
 
     # --- Страница статьи на своём сайте ---
     body_html = esc(long_text).replace("\n", "<br><br>")
