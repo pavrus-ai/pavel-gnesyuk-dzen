@@ -11,14 +11,14 @@ MAX_CHAT_ID = os.environ.get("MAX_CHAT_ID", "").strip()
 
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 PAGES_BASE = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
-MAX_API = "https://botapi.max.ru"
+MAX_HOSTS = ["https://platform-api2.max.ru", "https://botapi.max.ru"]
 TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
 REPORT = []
 
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v14 (очистка токена MAX + диагностика)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v16 (chat_id в URL + новый домен MAX)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -138,50 +138,49 @@ def tg_post_channel(img_bytes, caption):
         return
     log("✅ Тизер опубликован в Telegram-канал")
 
-def max_api(path, payload=None):
-    """MAX: токен в заголовке Authorization (рабочий способ)"""
+def max_api(path, payload=None, params=None):
+    """MAX: токен в заголовке Authorization, параметры (chat_id и т.п.) — в URL"""
     headers = {"Authorization": MAX_TOKEN}
-    try:
-        if payload is not None:
-            r = requests.post(f"{MAX_API}{path}", headers=headers, json=payload, timeout=30)
-        else:
-            r = requests.get(f"{MAX_API}{path}", headers=headers, timeout=30)
-        j = r.json()
-        if j.get("code") == "too.many.requests":
-            log("⏳ MAX: лимит, жду 5 сек...")
-            time.sleep(5)
+    last_err = ""
+    for host in MAX_HOSTS:
+        try:
             if payload is not None:
-                r = requests.post(f"{MAX_API}{path}", headers=headers, json=payload, timeout=30)
+                r = requests.post(host + path, headers=headers, params=params, json=payload, timeout=30)
             else:
-                r = requests.get(f"{MAX_API}{path}", headers=headers, timeout=30)
+                r = requests.get(host + path, headers=headers, params=params, timeout=30)
             j = r.json()
-        if j.get("code") == "verify.token":
-            log(f"⚠️ MAX {path}: {r.status_code} {str(j)[:120]}")
-        return j
-    except Exception as e:
-        log(f"⚠️ MAX: {e}")
-        return None
+            if j.get("code") == "too.many.requests":
+                log("⏳ MAX: лимит запросов, жду 4 сек...")
+                time.sleep(4)
+                continue
+            if r.status_code == 200:
+                return j
+            last_err = f"{host} → {r.status_code} {str(j)[:100]}"
+        except Exception as e:
+            last_err = f"{host} → {e}"
+    log(f"⚠️ MAX {path}: {last_err}")
+    return None
 
 def max_post_channel(img_bytes, caption):
-    """Публикация в канал MAX: канал берём из списка /chats"""
+    """Публикация в канал MAX: chat_id передаётся в URL"""
     if not MAX_TOKEN:
         log("⚠️ Нет MAX_TOKEN — пропуск MAX")
         return
-    chat_id = MAX_CHAT_ID
+    chat_id = None
     chats = max_api("/chats")
-    if chats and chats.get("chats"):
-        for c in chats["chats"]:
+    if chats:
+        for c in chats.get("chats", []):
             if c.get("type") == "channel":
-                chat_id = str(c.get("chat_id"))
+                chat_id = c.get("chat_id")
                 log(f"ℹ️ MAX: канал из списка: {chat_id} «{c.get('title')}»")
                 break
-    else:
-        log(f"ℹ️ MAX: список чатов пуст: {str(chats)[:200]}")
-    if not chat_id:
+    if chat_id is None and MAX_CHAT_ID:
+        chat_id = int(MAX_CHAT_ID)
+    if chat_id is None:
         log("⚠️ MAX: нет канала для публикации")
         return
     att = None
-    up = max_api("/uploads", {"type": "image"})
+    up = max_api("/uploads", payload={"type": "image"}, params={"type": "image"})
     if up:
         up_url = up.get("url") or up.get("uploadUrl")
         up_token = up.get("token") or up.get("photoId")
@@ -192,11 +191,11 @@ def max_post_channel(img_bytes, caption):
                 log("✅ MAX: картинка загружена")
             except Exception as e:
                 log(f"⚠️ MAX upload: {e}")
-    time.sleep(2)
-    body = {"chat_id": chat_id, "text": caption}
+    time.sleep(1)
+    body = {"text": caption}
     if att:
         body["attachments"] = att
-    res = max_api("/messages", body)
+    res = max_api("/messages", payload=body, params={"chat_id": chat_id})
     log(f"✅ MAX: ответ отправки: {str(res)[:150]}")
 
 def build_article_page(title, img_url, body_html, litres_url):
