@@ -18,7 +18,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v12 (новая картинка каждый запуск + без дублей RSS)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v13 (MAX: только ?token= + паузы от лимитов)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -139,37 +139,25 @@ def tg_post_channel(img_bytes, caption):
     log("✅ Тизер опубликован в Telegram-канал")
 
 def max_api(path, payload=None):
-    """Пробует все способы авторизации MAX"""
-    variants = [
-        {"Authorization": f"Bearer {MAX_TOKEN}"},
-        {"Authorization": MAX_TOKEN},
-        {},
-    ]
-    for i, headers in enumerate(variants):
-        try:
-            if payload is not None:
-                r = requests.post(f"{MAX_API}{path}", headers=headers, json=payload, timeout=30)
-            else:
-                r = requests.get(f"{MAX_API}{path}", headers=headers, timeout=30)
-            j = r.json()
-            if r.status_code == 200 and j.get("code") != "verify.token":
-                log(f"✅ MAX: авторизация вариант {i+1} работает")
-                return j
-        except Exception:
-            pass
+    """Единственный рабочий способ авторизации MAX: ?token="""
     try:
         if payload is not None:
             r = requests.post(f"{MAX_API}{path}?token={MAX_TOKEN}", json=payload, timeout=30)
         else:
             r = requests.get(f"{MAX_API}{path}?token={MAX_TOKEN}", timeout=30)
         j = r.json()
-        if j.get("code") != "verify.token":
-            log("✅ MAX: авторизация через ?token= работает")
-            return j
-        log(f"⚠️ MAX: токен отклонён всеми способами: {str(j)[:150]}")
+        if j.get("code") == "too.many.requests":
+            log("⏳ MAX: лимит запросов, жду 5 сек и повторяю...")
+            time.sleep(5)
+            if payload is not None:
+                r = requests.post(f"{MAX_API}{path}?token={MAX_TOKEN}", json=payload, timeout=30)
+            else:
+                r = requests.get(f"{MAX_API}{path}?token={MAX_TOKEN}", timeout=30)
+            j = r.json()
+        return j
     except Exception as e:
         log(f"⚠️ MAX: {e}")
-    return None
+        return None
 
 def max_post_channel(img_bytes, caption):
     """Публикация в канал мессенджера MAX"""
@@ -192,6 +180,7 @@ def max_post_channel(img_bytes, caption):
                 log("✅ MAX: картинка загружена")
             except Exception as e:
                 log(f"⚠️ MAX upload: {e}")
+    time.sleep(2)
     body = {"chat_id": MAX_CHAT_ID, "text": caption}
     if att:
         body["attachments"] = att
