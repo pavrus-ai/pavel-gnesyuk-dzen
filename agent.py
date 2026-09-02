@@ -139,20 +139,21 @@ def tg_post_channel(img_bytes, caption):
     log("✅ Тизер опубликован в Telegram-канал")
 
 def max_api(path, payload=None):
-    """Авторизация MAX: ?token= (рабочий способ) + повтор при лимите"""
+    """MAX: токен в заголовке Authorization (рабочий способ)"""
+    headers = {"Authorization": MAX_TOKEN}
     try:
         if payload is not None:
-            r = requests.post(f"{MAX_API}{path}?token={MAX_TOKEN}", json=payload, timeout=30)
+            r = requests.post(f"{MAX_API}{path}", headers=headers, json=payload, timeout=30)
         else:
-            r = requests.get(f"{MAX_API}{path}?token={MAX_TOKEN}", timeout=30)
+            r = requests.get(f"{MAX_API}{path}", headers=headers, timeout=30)
         j = r.json()
         if j.get("code") == "too.many.requests":
-            log("⏳ MAX: лимит запросов, жду 5 сек и повторяю...")
+            log("⏳ MAX: лимит, жду 5 сек...")
             time.sleep(5)
             if payload is not None:
-                r = requests.post(f"{MAX_API}{path}?token={MAX_TOKEN}", json=payload, timeout=30)
+                r = requests.post(f"{MAX_API}{path}", headers=headers, json=payload, timeout=30)
             else:
-                r = requests.get(f"{MAX_API}{path}?token={MAX_TOKEN}", timeout=30)
+                r = requests.get(f"{MAX_API}{path}", headers=headers, timeout=30)
             j = r.json()
         if j.get("code") == "verify.token":
             log(f"⚠️ MAX {path}: {r.status_code} {str(j)[:120]}")
