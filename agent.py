@@ -18,7 +18,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v11 (Telegram + MAX с перебором авторизации + RSS)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v12 (новая картинка каждый запуск + без дублей RSS)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -269,11 +269,13 @@ def main():
     teaser = trim_text(teaser, 1024 - len(link_part))
     caption = teaser + link_part
 
-    # --- Картинка ---
+    # --- Картинка (новая при каждом запуске) ---
     clean_theme = "".join(c for c in theme if c.isalnum() or c.isspace())[:120].strip()
     p = ("Editorial illustration for russian literary article, "
          + clean_theme + ", artistic dramatic style, cinematic light, no text")
-    url = (POLLINATIONS_API + requests.utils.quote(p) + "?nologo=true&seed=" + str(day + 2000000))
+    run_no = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
+    seed = day + 2000000 + (run_no % 100)
+    url = (POLLINATIONS_API + requests.utils.quote(p) + f"?nologo=true&seed={seed}")
     log("Скачивание картинки...")
     r = requests.get(url, timeout=180)
     r.raise_for_status()
@@ -304,6 +306,7 @@ def main():
         posts = json.load(open("posts.json", encoding="utf-8"))
     except Exception:
         posts = []
+    posts = [p for p in posts if p["guid"] != f"pavel-gnesyuk-{day}"]
     posts.insert(0, {
         "guid": f"pavel-gnesyuk-{day}",
         "title": long_title,
