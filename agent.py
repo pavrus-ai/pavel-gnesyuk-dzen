@@ -6,8 +6,8 @@ GROQ_KEY = os.environ.get("GROQ_KEY", "")
 OR_KEY   = os.environ.get("OPENROUTER_KEY", "")
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHANNEL = os.environ.get("TELEGRAM_CHANNEL", "")
-MAX_TOKEN = os.environ.get("MAX_TOKEN", "")
-MAX_CHAT_ID = os.environ.get("MAX_CHAT_ID", "")
+MAX_TOKEN = os.environ.get("MAX_TOKEN", "").strip()
+MAX_CHAT_ID = os.environ.get("MAX_CHAT_ID", "").strip()
 
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 PAGES_BASE = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
@@ -18,7 +18,7 @@ REPORT = []
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v13 (MAX: только ?token= + паузы от лимитов)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v14 (очистка токена MAX + диагностика)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -139,7 +139,7 @@ def tg_post_channel(img_bytes, caption):
     log("✅ Тизер опубликован в Telegram-канал")
 
 def max_api(path, payload=None):
-    """Единственный рабочий способ авторизации MAX: ?token="""
+    """Авторизация MAX: ?token= (рабочий способ) + повтор при лимите"""
     try:
         if payload is not None:
             r = requests.post(f"{MAX_API}{path}?token={MAX_TOKEN}", json=payload, timeout=30)
@@ -154,6 +154,8 @@ def max_api(path, payload=None):
             else:
                 r = requests.get(f"{MAX_API}{path}?token={MAX_TOKEN}", timeout=30)
             j = r.json()
+        if j.get("code") == "verify.token":
+            log(f"⚠️ MAX {path}: {r.status_code} {str(j)[:120]}")
         return j
     except Exception as e:
         log(f"⚠️ MAX: {e}")
@@ -164,6 +166,7 @@ def max_post_channel(img_bytes, caption):
     if not MAX_TOKEN:
         log("⚠️ Нет MAX_TOKEN — пропуск MAX")
         return
+    log(f"ℹ️ MAX: длина токена {len(MAX_TOKEN)}, первые 3 символа: {MAX_TOKEN[:3]}")
     if not MAX_CHAT_ID:
         chats = max_api("/chats")
         log(f"ℹ️ MAX: список чатов (ищем chat_id канала): {str(chats)[:500]}")
