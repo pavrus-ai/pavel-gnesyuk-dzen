@@ -7,56 +7,57 @@ GROQ_KEY = os.environ.get("GROQ_KEY", "")
 OR_KEY   = os.environ.get("OPENROUTER_KEY", "")
 SITE_URL = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
-MAX_RSS_ITEMS = 10  # храним последние 10 статей в RSS
+MAX_RSS_ITEMS = 10
 
 def log(msg): print(msg, flush=True)
-log("Версия ℹ️ dzen-agent v3 (полноценные статьи 3000+ символов, RSS с guid, актуальные модели)")
+log("Версия ℹ️ dzen-agent v3 (полноценные статьи 3000+ символов, RSS с guid)")
 
-def ai_call(prompt, minlen=2000):  # Уменьшили требование до 2000
-    """Генерация статьи для Дзена с бесплатными моделями"""
+def ai_call(prompt, minlen=2000):
+    """Генерация длинной статьи для Дзена с бесплатными моделями OpenRouter"""
     attempts = []
     
     if OR_KEY:
-        # Эти модели БЕСПЛАТНЫ на OpenRouter (сентябрь 2026)
+        # Актуальные бесплатные модели OpenRouter (сентябрь 2026)
         attempts.append((
             "https://openrouter.ai/api/v1/chat/completions",
             {"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
-            "meta-llama/llama-3-8b-instruct:free",  # Бесплатная Llama 3 8B
+            "meta-llama/llama-3-8b-instruct:free",
             "OpenRouter (Llama 3 8B)"
         ))
         attempts.append((
             "https://openrouter.ai/api/v1/chat/completions",
             {"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
-            "microsoft/phi-3-mini-128k-instruct:free",  # Бесплатная Phi-3
+            "microsoft/phi-3-mini-128k-instruct:free",
             "OpenRouter (Phi-3)"
         ))
         attempts.append((
             "https://openrouter.ai/api/v1/chat/completions",
             {"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
-            "google/gemma-2-9b-it:free",  # Бесплатная Gemma 2
+            "google/gemma-2-9b-it:free",
             "OpenRouter (Gemma 2)"
         ))
     
     for url, headers, model, provider_name in attempts:
         try:
-            log(f" Попытка через {provider_name}...")
+            log(f"🔄 Попытка через {provider_name} ({model})...")
             r = requests.post(url, headers=headers,
                 json={
                     "model": model,
-                    "temperature": 0.8,  # Чуть выше для креативности
-                    "max_tokens": 4000,  # Ограничиваем токены
+                    "temperature": 0.8,
+                    "max_tokens": 4000,
                     "messages": [{"role": "user", "content": prompt}]
                 },
                 timeout=120
             )
             
             if r.status_code != 200:
-                log(f"️ {provider_name} код {r.status_code}")
+                log(f"⚠️ {provider_name} код {r.status_code}: {r.text[:200]}")
                 continue
             
             data = r.json()
             
             if "choices" not in data or not data["choices"]:
+                log(f"⚠️ {provider_name}: нет choices")
                 continue
             
             res = data["choices"][0]["message"]["content"].strip()
@@ -64,15 +65,19 @@ def ai_call(prompt, minlen=2000):  # Уменьшили требование д�
             if res and len(res) > minlen:
                 log(f"✅ Успех: {provider_name}, {len(res)} симв.")
                 return res
+            else:
+                log(f"⚠️ {provider_name}: короткий текст ({len(res)} симв.)")
                 
+        except requests.exceptions.Timeout:
+            log(f"⚠️ {provider_name}: таймаут")
         except Exception as e:
             log(f"⚠️ {provider_name}: {e}")
     
-    log("❌ Все попытки не удались")
+    log("❌ Все попытки генерации не удались")
     return None
 
 def generate_dzen_article(book):
-    """Создание полноценной статьи для Дзена (3000-5000 символов)"""
+    """Создание полноценной статьи для Дзена (2000-4000 символов)"""
     title = book["title"]
     series = book["series"]
     about = book["about"]
@@ -83,7 +88,7 @@ def generate_dzen_article(book):
         f"Напиши полноценную литературную статью для платформы Дзен о романе Павла Гнесюка "
         f"«{title}» (серия «{series}»).\n\n"
         f"ТРЕБОВАНИЯ:\n"
-        f"1. Объём: 3500-5000 символов\n"
+        f"1. Объём: 2500-4000 символов\n"
         f"2. Структура:\n"
         f"   - Цепляющий заголовок (без кликбейта, 8-12 слов)\n"
         f"   - Введение (2-3 абзаца): почему эта книга важна, что делает её уникальной\n"
@@ -96,7 +101,7 @@ def generate_dzen_article(book):
         f"ВАЖНО: Пиши ТОЛЬКО на русском языке. Статья должна быть уникальной, аналитической, глубокой."
     )
 
-    article = ai_call(prompt, minlen=3000)
+    article = ai_call(prompt, minlen=2000)
     if not article:
         log("⚠️ Не удалось сгенерировать статью")
         return None
@@ -134,7 +139,6 @@ def save_article_html(article, book, day):
     os.makedirs("a", exist_ok=True)
     os.makedirs("img", exist_ok=True)
 
-    # Безопасное экранирование HTML
     content_escaped = article['content'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
     content_html = content_escaped.replace('\n', '<br>\n')
 
@@ -200,7 +204,7 @@ def load_existing_rss():
                         "content": content_enc, "img_url": img_url
                     })
         except Exception as e:
-            log(f"⚠️ Ошибка чтения старого RSS: {e}")
+            log(f"️ Ошибка чтения старого RSS: {e}")
     return items
 
 def generate_rss(new_item, existing_items):
@@ -225,7 +229,6 @@ def generate_rss(new_item, existing_items):
     lang_el = SubElement(channel, 'language')
     lang_el.text = "ru-ru"
 
-    # Новая статья первой
     all_items = [new_item] + existing_items
     all_items = all_items[:MAX_RSS_ITEMS]
 
@@ -308,7 +311,7 @@ def main():
 
     log("=" * 50)
     log("✅ FINISH: статья и RSS для Дзена готовы!")
-    log(f"📄 RSS: {SITE_URL}/dzen-rss.xml")
+    log(f" RSS: {SITE_URL}/dzen-rss.xml")
     log("=" * 50)
 
 if __name__ == "__main__":
