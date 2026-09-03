@@ -8,10 +8,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          
       - run: pip install requests
+      
       - name: Run Dzen agent
         run: python dzen_agent.py
         env:
@@ -24,3 +27,11 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           ERROR_EMAIL_TO: ${{ secrets.ERROR_EMAIL_TO }}
+          
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add dzen-rss.xml a/ img/
+          git commit -m "chore: update dzen rss and articles [skip ci]" || echo "No changes to commit"
+          git push
