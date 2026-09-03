@@ -1,15 +1,10 @@
-name: Dzen Article Agent
+name: Dzen RSS Agent
 on:
+  workflow_dispatch:
   schedule:
-    # 18:00 МСК = 15:00 UTC
-    - cron: "0 15 * * *"
-  workflow_dispatch: {}
-
-permissions:
-  contents: write
-
+    - cron: "0 8 * * *"  # Каждый день в 8:00 UTC
 jobs:
-  article:
+  dzen:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,18 +12,8 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install requests
-      - name: Run agent
+      - name: Run Dzen agent
+        run: python dzen_agent.py
         env:
           GROQ_KEY: ${{ secrets.GROQ_KEY }}
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
-          MAX_TOKEN: ${{ secrets.MAX_TOKEN }}
-          MAX_CHAT_ID: ${{ secrets.MAX_CHAT_ID }}
-        run: python agent.py
-      - name: Commit feed
-        run: |
-          git config --global user.name "dzen-agent"
-          git config --global user.email "pavel-gnesyuk-dzen@users.noreply.github.com"
-          git add rss.xml posts.json img/ index.html a/
-          git diff --staged --quiet || (git commit -m "dzen article update" && git push)
