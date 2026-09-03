@@ -13,33 +13,45 @@ def log(msg): print(msg, flush=True)
 log("Версия ℹ️ dzen-agent v3 (полноценные статьи 3000+ символов, RSS с guid, актуальные модели)")
 
 def ai_call(prompt, minlen=2500):
-    """Генерация длинной статьи для Дзена с актуальными моделями и защитой от сбоев"""
+    """Генерация длинной статьи для Дзена с актуальными моделями (сентябрь 2026)"""
     attempts = []
+    
+    # Groq - используем новую модель Llama 3.1
     if GROQ_KEY:
-        attempts.append(("https://api.groq.com/openai/v1/chat/completions",
-                         {"Authorization": f"Bearer {GROQ_KEY}"}, 
-                         "llama3-70b-8192", "Groq"))
+        attempts.append((
+            "https://api.groq.com/openai/v1/chat/completions",
+            {"Authorization": f"Bearer {GROQ_KEY}"},
+            "llama-3.1-70b-versatile",  # Новая версия вместо 3.0
+            "Groq"
+        ))
+    
+    # OpenRouter - пробуем бесплатные модели
     if OR_KEY:
-        attempts.append(("https://openrouter.ai/api/v1/chat/completions",
-                         {"Authorization": f"Bearer {OR_KEY}", 
-                          "HTTP-Referer": "https://github.com"},
-                         "deepseek/deepseek-chat-v3-0324:free", "OpenRouter (DeepSeek)"))
-        attempts.append(("https://openrouter.ai/api/v1/chat/completions",
-                         {"Authorization": f"Bearer {OR_KEY}", 
-                          "HTTP-Referer": "https://github.com"},
-                         "google/gemma-3-27b-it:free", "OpenRouter (Gemma)"))
-        attempts.append(("https://openrouter.ai/api/v1/chat/completions",
-                         {"Authorization": f"Bearer {OR_KEY}", 
-                          "HTTP-Referer": "https://github.com"},
-                         "qwen/qwen3-235b-a22b:free", "OpenRouter (Qwen)"))
+        # Пробуем разные бесплатные модели
+        attempts.append((
+            "https://openrouter.ai/api/v1/chat/completions",
+            {"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
+            "meta-llama/llama-3.1-70b-instruct",
+            "OpenRouter (Llama 3.1)"
+        ))
+        attempts.append((
+            "https://openrouter.ai/api/v1/chat/completions",
+            {"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
+            "mistralai/mistral-large",
+            "OpenRouter (Mistral)"
+        ))
     
     for url, headers, model, provider_name in attempts:
         try:
-            log(f"🔄 Попытка через {provider_name} ({model})...")
+            log(f" Попытка через {provider_name} ({model})...")
             r = requests.post(url, headers=headers,
-                json={"model": model, "temperature": 0.7,
-                      "messages": [{"role": "user", "content": prompt}]}, 
-                timeout=120)
+                json={
+                    "model": model,
+                    "temperature": 0.7,
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=120
+            )
             
             if r.status_code != 200:
                 log(f"⚠️ {provider_name} код {r.status_code}: {r.text[:200]}")
@@ -48,7 +60,7 @@ def ai_call(prompt, minlen=2500):
             data = r.json()
             
             if "choices" not in data or not data["choices"]:
-                log(f"️ {provider_name}: нет choices. Ответ: {str(data)[:300]}")
+                log(f"⚠️ {provider_name}: нет choices")
                 continue
             
             res = data["choices"][0]["message"]["content"].strip()
@@ -59,8 +71,6 @@ def ai_call(prompt, minlen=2500):
             else:
                 log(f"⚠️ {provider_name}: короткий текст ({len(res)} симв.)")
                 
-        except requests.exceptions.Timeout:
-            log(f"⚠️ {provider_name}: таймаут")
         except Exception as e:
             log(f"⚠️ {provider_name}: {e}")
     
