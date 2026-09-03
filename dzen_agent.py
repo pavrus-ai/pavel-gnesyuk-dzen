@@ -10,39 +10,45 @@ POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 MAX_RSS_ITEMS = 10  # храним последние 10 статей в RSS
 
 def log(msg): print(msg, flush=True)
-log("Версия ℹ️ dzen-agent v2 (полноценные статьи 3000+ символов, RSS с guid)")
+log("Версия ℹ️ dzen-agent v3 (полноценные статьи 3000+ символов, RSS с guid, актуальные модели)")
+
 def ai_call(prompt, minlen=2500):
-    """Генерация длинной статьи для Дзена с улучшенной обработкой ошибок"""
+    """Генерация длинной статьи для Дзена с актуальными моделями и защитой от сбоев"""
     attempts = []
     if GROQ_KEY:
         attempts.append(("https://api.groq.com/openai/v1/chat/completions",
                          {"Authorization": f"Bearer {GROQ_KEY}"}, 
-                         "llama-3.3-70b-versatile", "Groq"))
+                         "llama3-70b-8192", "Groq"))
     if OR_KEY:
         attempts.append(("https://openrouter.ai/api/v1/chat/completions",
                          {"Authorization": f"Bearer {OR_KEY}", 
                           "HTTP-Referer": "https://github.com"},
-                         "meta-llama/llama-3.3-70b-instruct:free", 
-                         "OpenRouter"))
+                         "deepseek/deepseek-chat-v3-0324:free", "OpenRouter (DeepSeek)"))
+        attempts.append(("https://openrouter.ai/api/v1/chat/completions",
+                         {"Authorization": f"Bearer {OR_KEY}", 
+                          "HTTP-Referer": "https://github.com"},
+                         "google/gemma-3-27b-it:free", "OpenRouter (Gemma)"))
+        attempts.append(("https://openrouter.ai/api/v1/chat/completions",
+                         {"Authorization": f"Bearer {OR_KEY}", 
+                          "HTTP-Referer": "https://github.com"},
+                         "qwen/qwen3-235b-a22b:free", "OpenRouter (Qwen)"))
     
     for url, headers, model, provider_name in attempts:
         try:
-            log(f"🔄 Попытка генерации через {provider_name} ({model})...")
+            log(f"🔄 Попытка через {provider_name} ({model})...")
             r = requests.post(url, headers=headers,
                 json={"model": model, "temperature": 0.7,
                       "messages": [{"role": "user", "content": prompt}]}, 
                 timeout=120)
             
-            # Проверяем HTTP статус
             if r.status_code != 200:
-                log(f"⚠️ {provider_name} вернул код {r.status_code}: {r.text[:200]}")
+                log(f"⚠️ {provider_name} код {r.status_code}: {r.text[:200]}")
                 continue
             
             data = r.json()
             
-            # Проверяем наличие choices
             if "choices" not in data or not data["choices"]:
-                log(f"⚠️ {provider_name} не вернул choices. Ответ: {str(data)[:300]}")
+                log(f"️ {provider_name}: нет choices. Ответ: {str(data)[:300]}")
                 continue
             
             res = data["choices"][0]["message"]["content"].strip()
@@ -51,18 +57,14 @@ def ai_call(prompt, minlen=2500):
                 log(f"✅ Успех: {provider_name}, {len(res)} симв.")
                 return res
             else:
-                log(f"⚠️ {provider_name} вернул слишком короткий текст: {len(res)} симв.")
+                log(f"⚠️ {provider_name}: короткий текст ({len(res)} симв.)")
                 
         except requests.exceptions.Timeout:
-            log(f"⚠️ {provider_name}: таймаут запроса (120 сек)")
-        except requests.exceptions.RequestException as e:
-            log(f"⚠️ {provider_name}: ошибка соединения - {e}")
-        except KeyError as e:
-            log(f"⚠️ {provider_name}: неожиданный формат ответа - ключ {e} не найден")
+            log(f"⚠️ {provider_name}: таймаут")
         except Exception as e:
-            log(f"⚠️ {provider_name}: непредвиденная ошибка - {e}")
+            log(f"⚠️ {provider_name}: {e}")
     
-    log("❌ Все попытки генерации статьи не удались")
+    log("❌ Все попытки генерации не удались")
     return None
 
 def generate_dzen_article(book):
@@ -128,9 +130,8 @@ def save_article_html(article, book, day):
     os.makedirs("a", exist_ok=True)
     os.makedirs("img", exist_ok=True)
 
-    # Экранируем HTML-символы в контенте
+    # Безопасное экранирование HTML
     content_escaped = article['content'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    # Заменяем переводы строк на <br>
     content_html = content_escaped.replace('\n', '<br>\n')
 
     html = f"""<!DOCTYPE html>
@@ -222,7 +223,6 @@ def generate_rss(new_item, existing_items):
 
     # Новая статья первой
     all_items = [new_item] + existing_items
-    # Оставляем только MAX_RSS_ITEMS последних
     all_items = all_items[:MAX_RSS_ITEMS]
 
     for item in all_items:
@@ -270,15 +270,13 @@ def main():
     book = books[day % len(books)]
     log(f"📚 Книга дня: «{book['title']}» ({book['series']})")
 
-    # Генерируем статью
     article = generate_dzen_article(book)
     if not article:
-        log(" Не удалось создать статью")
+        log("❌ Не удалось создать статью")
         return
 
     log(f"📝 Статья создана: {len(article['full_text'])} символов")
 
-    # Сохраняем HTML и картинку
     paths = save_article_html(article, book, day)
 
     img_bytes = generate_image(article['full_text'], book)
@@ -288,7 +286,6 @@ def main():
             f.write(img_bytes)
         log(f"✅ Картинка сохранена: {img_path}")
 
-    # Формируем новую запись RSS
     now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3)))
     pub_date = now.strftime("%a, %d %b %Y %H:%M:%S +0300")
 
@@ -302,13 +299,12 @@ def main():
         "img_url": paths['img_url'] if img_bytes else ""
     }
 
-    # Загружаем старые статьи и добавляем новую
     existing = load_existing_rss()
     generate_rss(new_item, existing)
 
     log("=" * 50)
     log("✅ FINISH: статья и RSS для Дзена готовы!")
-    log(f" RSS: {SITE_URL}/dzen-rss.xml")
+    log(f"📄 RSS: {SITE_URL}/dzen-rss.xml")
     log("=" * 50)
 
 if __name__ == "__main__":
