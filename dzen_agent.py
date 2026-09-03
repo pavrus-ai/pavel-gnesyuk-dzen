@@ -1,118 +1,136 @@
 # -*- coding: utf-8 -*-
-import os, json, datetime, requests, time, hashlib
+import os, json, datetime, requests, time, hashlib, smtplib
 from xml.etree.ElementTree import Element, SubElement, tostring, parse
 from xml.dom import minidom
+from email.mime.text import MIMEText
 
-GROQ_KEY = os.environ.get("GROQ_KEY", "")
-OR_KEY   = os.environ.get("OPENROUTER_KEY", "")
+# --- Настройки окружения ---
+GROQ_KEY = os.environ.get("GROQ_KEY", "").strip()
+GROQ_KEY2 = os.environ.get("GROQ_KEY2", "").strip()
+OR_KEY = os.environ.get("OPENROUTER_KEY", "").strip()
+OR_KEY2 = os.environ.get("OPENROUTER_KEY2", "").strip()
+
 SITE_URL = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
-MAX_RSS_ITEMS = 10
+MAX_RSS_ITEMS = 15
 
-def log(msg): print(msg, flush=True)
-log("Версия ℹ️ dzen-agent v3 (полноценные статьи 3000+ символов, RSS с guid)")
+# Настройки SMTP (Яндекс)
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.yandex.ru").strip()
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "").strip()
+SMTP_PASS = os.environ.get("SMTP_PASS", "").strip()
+ERROR_EMAIL_TO = os.environ.get("ERROR_EMAIL_TO", "").strip()
+
+def log(msg): 
+    print(msg, flush=True)
+
+log("Версия ℹ️ dzen-agent v5 (модели из agent.py + Яндекс SMTP + KEY2)")
+
+# --- Уведомления на почту ---
+def send_email(subject, body):
+    if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, ERROR_EMAIL_TO]):
+        log("⚠️ Настройки SMTP не заданы — пропускаем отправку письма")
+        return
+    try:
+        msg = MIMEText(body, 'plain', 'utf-8')
+        msg['Subject'] = subject
+        msg['From'] = SMTP_USER
+        msg['To'] = ERROR_EMAIL_TO
+        
+        # Для Яндекса используем порт 587 и starttls()
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+        log(f"✅ Письмо отправлено на {ERROR_EMAIL_TO}")
+    except Exception as e:
+        log(f"⚠️ Ошибка отправки письма: {e}")
+
+# --- Генерация текста ИИ (модели точно как в agent.py) ---
+def ai_groq(prompt, model, key):
+    if not key: return None
+    try:
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": model, "temperature": 0.8, "messages": [{"role": "user", "content": prompt}]},
+            timeout=60).json()
+        if "error" in r: return None
+        return r["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return None
+
+def ai_openrouter(prompt, model, key):
+    if not key: return None
+    try:
+        r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "HTTP-Referer": "https://github.com"},
+            json={"model": model, "temperature": 0.8, "max_tokens": 4000, "messages": [{"role": "user", "content": prompt}]},
+            timeout=60).json()
+        if "error" in r: return None
+        return r["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return None
 
 def ai_call(prompt, minlen=2000):
-    """Генерация длинной статьи для Дзена (используем GROQ_KEY2 и OPENROUTER_KEY2)"""
-    attempts = []
+    # Используем KEY2, если есть, иначе обычные ключи
+    g_key = GROQ_KEY2 or GROQ_KEY
+    o_key = OR_KEY2 or OR_KEY
     
-    # Используем ВТОРЫЕ токены для Дзена
-    GROQ_KEY2 = os.environ.get("GROQ_KEY2", "")
-    OR_KEY2 = os.environ.get("OPENROUTER_KEY2", "")
+    # Модели точно как в agent.py
+    models = [
+        ("groq", "llama-3.3-70b-versatile", g_key),
+        ("openrouter", "meta-llama/llama-3.3-70b-instruct:free", o_key),
+        ("openrouter", "google/gemma-3-27b-it:free", o_key),
+        ("openrouter", "deepseek/deepseek-chat-v3-0324:free", o_key),
+        ("openrouter", "auto", o_key)
+    ]
     
-    if GROQ_KEY2:
-        attempts.append((
-            "https://api.groq.com/openai/v1/chat/completions",
-            {"Authorization": f"Bearer {GROQ_KEY2}"},
-            "llama-3.3-70b-versatile",
-            "Groq (Key2)"
-        ))
-    
-    if OR_KEY2:
-        attempts.append((
-            "https://openrouter.ai/api/v1/chat/completions",
-            {"Authorization": f"Bearer {OR_KEY2}", "HTTP-Referer": "https://github.com"},
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "OpenRouter (Llama 3.3 Key2)"
-        ))
-        attempts.append((
-            "https://openrouter.ai/api/v1/chat/completions",
-            {"Authorization": f"Bearer {OR_KEY2}", "HTTP-Referer": "https://github.com"},
-            "google/gemma-3-27b-it:free",
-            "OpenRouter (Gemma 3 Key2)"
-        ))
-        attempts.append((
-            "https://openrouter.ai/api/v1/chat/completions",
-            {"Authorization": f"Bearer {OR_KEY2}", "HTTP-Referer": "https://github.com"},
-            "deepseek/deepseek-chat-v3-0324:free",
-            "OpenRouter (DeepSeek Key2)"
-        ))
-    
-    for url, headers, model, provider_name in attempts:
+    for provider, model, key in models:
+        if not key and provider != "groq": # auto может работать без ключа в некоторых случаях, но лучше с ним
+            continue
         try:
-            log(f"🔄 Попытка через {provider_name} ({model})...")
-            
-            payload = {
-                "model": model,
-                "temperature": 0.8,
-                "max_tokens": 4000,
-                "messages": [{"role": "user", "content": prompt}]
-            }
-            
-            r = requests.post(url, headers=headers, json=payload, timeout=120)
-            
-            if r.status_code != 200:
-                log(f"⚠️ {provider_name} код {r.status_code}: {r.text[:200]}")
-                continue
-            
-            data = r.json()
-            
-            if "choices" not in data or not data["choices"]:
-                log(f"️ {provider_name}: нет choices")
-                continue
-            
-            res = data["choices"][0]["message"]["content"].strip()
-            
-            if res and len(res) > minlen:
-                log(f"✅ Успех: {provider_name}, {len(res)} симв.")
+            log(f"🔄 Попытка: {provider} ({model})...")
+            res = ai_groq(prompt, model, key) if provider == "groq" else ai_openrouter(prompt, model, key)
+            if res and len(res) >= minlen:
+                log(f"✅ Успех: {provider} ({model}), {len(res)} симв.")
                 return res
-            else:
-                log(f"⚠️ {provider_name}: короткий текст ({len(res)} симв.)")
-                
+            elif res:
+                log(f"⚠️ {provider}: текст короткий ({len(res)} симв., нужно {minlen})")
         except Exception as e:
-            log(f"⚠️ {provider_name}: {e}")
+            log(f"⚠️ {provider} ошибка: {e}")
     
-    log("❌ Все попытки генерации не удались")
+    log("❌ Все попытки генерации ИИ не удались")
     return None
 
+# --- Генерация статьи ---
 def generate_dzen_article(book):
-    """Создание полноценной статьи для Дзена (2000-4000 символов)"""
     title = book["title"]
     series = book["series"]
     about = book["about"]
+    url = book["url"]
     fragments = book.get("fragments", [])
     quote = fragments[0] if fragments else ""
 
     prompt = (
-        f"Напиши полноценную литературную статью для платформы Дзен о романе Павла Гнесюка "
-        f"«{title}» (серия «{series}»).\n\n"
+        f"Напиши развёрнутую статью для Дзена о романе Павла Гнесюка «{title}» (серия «{series}»).\n\n"
         f"ТРЕБОВАНИЯ:\n"
-        f"1. Объём: 2500-4000 символов\n"
-        f"2. Структура:\n"
-        f"   - Цепляющий заголовок (без кликбейта, 8-12 слов)\n"
-        f"   - Введение (2-3 абзаца): почему эта книга важна, что делает её уникальной\n"
-        f"   - Основная часть (5-7 абзацев): глубокий анализ сюжета и персонажей, "
-        f"исторические или культурные параллели, что делает эту книгу особенной в жанре\n"
-        f"   - Заключение (2-3 абзаца): кому подойдёт книга, какие вопросы поднимает\n"
-        f"3. Стиль: живой, увлекательный, но без пафоса\n"
-        f"4. Обязательно включи цитату из книги: «{quote[:200]}»\n"
-        f"5. Используй информацию о сюжете: {about[:800]}\n\n"
-        f"ВАЖНО: Пиши ТОЛЬКО на русском языке. Статья должна быть уникальной, аналитической, глубокой."
+        f"1. ТОЛЬКО русский язык.\n"
+        f"2. Длина СТРОГО 2500-4000 символов.\n"
+        f"3. Первая строка — заголовок ЗАГЛАВНЫМИ буквами, без ** и ##.\n"
+        f"4. Пиши как литературный обозреватель: живо, уникально, без пафоса.\n"
+        f"5. Структура: заголовок, введение (2-3 абзаца), основная часть (анализ сюжета/героев/мира, 4-6 абзацев), заключение.\n"
+        f"6. В тексте обязательно используй цитату: «{quote[:200]}»\n"
+        f"7. В конце обязательно добавь: «Читайте роман «{title}» на ЛитРес: {url}»\n\n"
+        f"Сюжет книги: {about[:800]}"
     )
 
     article = ai_call(prompt, minlen=2000)
     if not article:
         log("⚠️ Не удалось сгенерировать статью")
+        send_email(
+            "🚨 Ошибка: ИИ не смог создать статью для Дзена",
+            f"Книга: {title}\nДата: {datetime.datetime.now()}\nВсе модели вернули ошибку или слишком короткий текст."
+        )
         return None
 
     lines = article.split('\n')
@@ -121,10 +139,10 @@ def generate_dzen_article(book):
 
     return {"title": headline, "content": content, "full_text": article}
 
-def generate_image(article_text, book):
-    """Генерация яркой картинки для статьи"""
+# --- Генерация картинки ---
+def generate_image(book):
     scene_prompt = (
-        f"Photorealistic cinematic scene from Russian thriller novel: "
+        f"Photorealistic cinematic scene from Russian fantasy thriller novel: "
         f"{book['about'][:300]}, bright vivid colors, dramatic daylight composition, "
         f"people in action seen from behind, sharp focus, high resolution, no text"
     )
@@ -139,8 +157,8 @@ def generate_image(article_text, book):
         log(f"⚠️ Ошибка генерации картинки: {e}")
         return None
 
+# --- Сохранение HTML ---
 def save_article_html(article, book, day):
-    """Сохранение статьи как HTML-файл с постоянным URL"""
     slug = hashlib.md5(f"{book['title']}-{day}".encode()).hexdigest()[:12]
     filename = f"a/dzen_{slug}.html"
     img_filename = f"img/dzen_{slug}.jpg"
@@ -163,18 +181,12 @@ def save_article_html(article, book, day):
     <meta property="og:image" content="{SITE_URL}/{img_filename}">
     <meta property="og:type" content="article">
 </head>
-<body>
-    <article>
+<body style="font-family:Georgia,serif;background:#141414;color:#eee;margin:0;padding:20px">
+    <article style="max-width:800px;margin:0 auto">
         <h1>{article['title']}</h1>
-        <img src="{SITE_URL}/{img_filename}" alt="{article['title']}" style="max-width:100%;height:auto;">
-        <div class="content">
-            {content_html}
-        </div>
-        <div class="book-info">
-            <p><strong>Книга:</strong> {book['title']}</p>
-            <p><strong>Серия:</strong> {book['series']}</p>
-            <p><a href="{book['url']}">Читать на ЛитРес</a></p>
-        </div>
+        <img src="{SITE_URL}/{img_filename}" alt="{article['title']}" style="width:100%;border-radius:10px">
+        <div style="line-height:1.6">{content_html}</div>
+        <p style="margin-top:30px"><a href="{book['url']}" style="color:#7ab8ff">📖 Читать роман на ЛитРес</a></p>
     </article>
 </body>
 </html>"""
@@ -183,14 +195,10 @@ def save_article_html(article, book, day):
         f.write(html)
 
     log(f"✅ Статья сохранена: {filename}")
-    return {
-        "url": f"{SITE_URL}/{filename}",
-        "img_url": f"{SITE_URL}/{img_filename}",
-        "slug": slug
-    }
+    return {"url": f"{SITE_URL}/{filename}", "img_url": f"{SITE_URL}/{img_filename}", "slug": slug}
 
+# --- Работа с RSS ---
 def load_existing_rss():
-    """Загружает существующие статьи из dzen-rss.xml"""
     items = []
     if os.path.exists("dzen-rss.xml"):
         try:
@@ -199,70 +207,45 @@ def load_existing_rss():
             channel = root.find("channel")
             if channel is not None:
                 for item in channel.findall("item"):
-                    title = item.findtext("title", "")
-                    link = item.findtext("link", "")
-                    guid = item.findtext("guid", "")
-                    pub_date = item.findtext("pubDate", "")
-                    desc = item.findtext("description", "")
-                    content_enc = item.findtext("{http://purl.org/rss/1.0/modules/content/}encoded", "")
-                    enclosure = item.find("enclosure")
-                    img_url = enclosure.get("url", "") if enclosure is not None else ""
                     items.append({
-                        "title": title, "link": link, "guid": guid,
-                        "pub_date": pub_date, "description": desc,
-                        "content": content_enc, "img_url": img_url
+                        "title": item.findtext("title", ""),
+                        "link": item.findtext("link", ""),
+                        "guid": item.findtext("guid", ""),
+                        "pub_date": item.findtext("pubDate", ""),
+                        "description": item.findtext("description", ""),
+                        "content": item.findtext("{http://purl.org/rss/1.0/modules/content/}encoded", ""),
+                        "img_url": item.find("enclosure").get("url", "") if item.find("enclosure") is not None else ""
                     })
         except Exception as e:
-            log(f"️ Ошибка чтения старого RSS: {e}")
+            log(f"⚠️ Ошибка чтения старого RSS: {e}")
     return items
 
 def generate_rss(new_item, existing_items):
-    """Генерация RSS-ленты для Дзена с правильными тегами"""
-    os.makedirs("a", exist_ok=True)
-
     rss = Element('rss', version='2.0')
     rss.set('xmlns:content', 'http://purl.org/rss/1.0/modules/content/')
     rss.set('xmlns:atom', 'http://www.w3.org/2005/Atom')
 
     channel = SubElement(rss, 'channel')
+    SubElement(channel, 'title').text = "Павел Гнесюк — Книги и истории"
+    SubElement(channel, 'link').text = SITE_URL
+    SubElement(channel, 'description').text = "Авторские триллеры: «Хранители» и «Тарские легенды». Глубокие разборы книг."
+    SubElement(channel, 'language').text = "ru-ru"
 
-    title_el = SubElement(channel, 'title')
-    title_el.text = "Павел Гнесюк — Книги и истории"
-
-    link_el = SubElement(channel, 'link')
-    link_el.text = SITE_URL
-
-    desc_el = SubElement(channel, 'description')
-    desc_el.text = "Авторские триллеры и приключения: циклы «Хранители» и «Тарские легенды». Глубокие разборы книг, исторические параллели, анализ сюжетов."
-
-    lang_el = SubElement(channel, 'language')
-    lang_el.text = "ru-ru"
-
-    all_items = [new_item] + existing_items
-    all_items = all_items[:MAX_RSS_ITEMS]
+    all_items = ([new_item] + existing_items)[:MAX_RSS_ITEMS]
 
     for item in all_items:
         entry = SubElement(channel, 'item')
-
-        t = SubElement(entry, 'title')
-        t.text = item['title']
-
-        l = SubElement(entry, 'link')
-        l.text = item['link']
-
+        SubElement(entry, 'title').text = item['title']
+        SubElement(entry, 'link').text = item['link']
         g = SubElement(entry, 'guid')
         g.text = item['guid']
         g.set('isPermaLink', 'true')
-
-        pd = SubElement(entry, 'pubDate')
-        pd.text = item['pub_date']
-
-        d = SubElement(entry, 'description')
-        d.text = item['description']
-
+        SubElement(entry, 'pubDate').text = item['pub_date']
+        SubElement(entry, 'description').text = item['description']
+        
         ce = SubElement(entry, '{http://purl.org/rss/1.0/modules/content/}encoded')
         ce.text = f"<![CDATA[{item['content']}]]>"
-
+        
         if item.get('img_url'):
             enc = SubElement(entry, 'enclosure')
             enc.set('url', item['img_url'])
@@ -272,14 +255,15 @@ def generate_rss(new_item, existing_items):
     xml_str = minidom.parseString(tostring(rss, encoding='unicode')).toprettyxml(indent="  ")
     with open('dzen-rss.xml', 'w', encoding='utf-8') as f:
         f.write(xml_str)
-
     log("✅ RSS-лента сохранена: dzen-rss.xml")
 
+# --- Главная функция ---
 def main():
     try:
         books = json.load(open("books.json", encoding="utf-8"))["books"]
     except Exception as e:
         log(f"❌ Ошибка загрузки books.json: {e}")
+        send_email("🚨 Критическая ошибка: books.json не найден", str(e))
         return
 
     day = datetime.date.today().toordinal()
@@ -288,14 +272,18 @@ def main():
 
     article = generate_dzen_article(book)
     if not article:
-        log("❌ Не удалось создать статью")
         return
 
     log(f"📝 Статья создана: {len(article['full_text'])} символов")
 
-    paths = save_article_html(article, book, day)
+    try:
+        paths = save_article_html(article, book, day)
+    except Exception as e:
+        log(f"❌ Ошибка сохранения HTML: {e}")
+        send_email("🚨 Ошибка сохранения HTML-статьи", str(e))
+        return
 
-    img_bytes = generate_image(article['full_text'], book)
+    img_bytes = generate_image(book)
     if img_bytes:
         img_path = f"img/dzen_{paths['slug']}.jpg"
         with open(img_path, 'wb') as f:
@@ -318,9 +306,16 @@ def main():
     existing = load_existing_rss()
     generate_rss(new_item, existing)
 
+    send_email(
+        "✅ Dzen Agent: Статья успешно опубликована",
+        f"Книга: {book['title']}\n"
+        f"Символов: {len(article['full_text'])}\n"
+        f"URL статьи: {paths['url']}\n"
+        f"RSS: {SITE_URL}/dzen-rss.xml"
+    )
+
     log("=" * 50)
     log("✅ FINISH: статья и RSS для Дзена готовы!")
-    log(f" RSS: {SITE_URL}/dzen-rss.xml")
     log("=" * 50)
 
 if __name__ == "__main__":
@@ -328,4 +323,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         log(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        send_email("🚨 Критический сбой агента Дзена", f"Исключение: {e}")
         raise
