@@ -15,40 +15,53 @@ log("Версия ℹ️ dzen-agent v3 (полноценные статьи 3000
 def ai_call(prompt, minlen=2000):
     """Генерация длинной статьи для Дзена с бесплатными моделями OpenRouter"""
     attempts = []
+def ai_call(prompt, minlen=2000):
+    """Генерация статьи через Pollinations Text API (бесплатно, без ключей)"""
+    attempts = []
     
+    # 1. Pollinations Text API — полностью бесплатно, без ключей
+    attempts.append((
+        "https://text.pollinations.ai/openai",
+        {},  # без авторизации
+        "openai",  # модель
+        "Pollinations (OpenAI)"
+    ))
+    attempts.append((
+        "https://text.pollinations.ai/openai",
+        {},
+        "mistral",  # модель Mistral
+        "Pollinations (Mistral)"
+    ))
+    
+    # 2. OpenRouter — если есть баланс (без :free)
     if OR_KEY:
-        # Актуальные бесплатные модели OpenRouter (сентябрь 2026)
         attempts.append((
             "https://openrouter.ai/api/v1/chat/completions",
             {"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
-            "meta-llama/llama-3-8b-instruct:free",
-            "OpenRouter (Llama 3 8B)"
-        ))
-        attempts.append((
-            "https://openrouter.ai/api/v1/chat/completions",
-            {"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
-            "microsoft/phi-3-mini-128k-instruct:free",
-            "OpenRouter (Phi-3)"
-        ))
-        attempts.append((
-            "https://openrouter.ai/api/v1/chat/completions",
-            {"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
-            "google/gemma-2-9b-it:free",
-            "OpenRouter (Gemma 2)"
+            "meta-llama/llama-3.1-8b-instruct",  # без :free, стоит копейки
+            "OpenRouter (Llama 3.1)"
         ))
     
     for url, headers, model, provider_name in attempts:
         try:
             log(f"🔄 Попытка через {provider_name} ({model})...")
-            r = requests.post(url, headers=headers,
-                json={
+            
+            if "pollinations" in url:
+                # Pollinations использует формат OpenAI
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.8
+                }
+            else:
+                payload = {
                     "model": model,
                     "temperature": 0.8,
                     "max_tokens": 4000,
                     "messages": [{"role": "user", "content": prompt}]
-                },
-                timeout=120
-            )
+                }
+            
+            r = requests.post(url, headers=headers, json=payload, timeout=120)
             
             if r.status_code != 200:
                 log(f"⚠️ {provider_name} код {r.status_code}: {r.text[:200]}")
@@ -68,8 +81,6 @@ def ai_call(prompt, minlen=2000):
             else:
                 log(f"⚠️ {provider_name}: короткий текст ({len(res)} симв.)")
                 
-        except requests.exceptions.Timeout:
-            log(f"⚠️ {provider_name}: таймаут")
         except Exception as e:
             log(f"⚠️ {provider_name}: {e}")
     
