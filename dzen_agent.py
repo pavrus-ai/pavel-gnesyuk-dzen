@@ -11,28 +11,58 @@ MAX_RSS_ITEMS = 10  # храним последние 10 статей в RSS
 
 def log(msg): print(msg, flush=True)
 log("Версия ℹ️ dzen-agent v2 (полноценные статьи 3000+ символов, RSS с guid)")
-
 def ai_call(prompt, minlen=2500):
-    """Генерация длинной статьи для Дзена"""
+    """Генерация длинной статьи для Дзена с улучшенной обработкой ошибок"""
     attempts = []
     if GROQ_KEY:
         attempts.append(("https://api.groq.com/openai/v1/chat/completions",
-                         {"Authorization": f"Bearer {GROQ_KEY}"}, "llama-3.3-70b-versatile"))
+                         {"Authorization": f"Bearer {GROQ_KEY}"}, 
+                         "llama-3.3-70b-versatile", "Groq"))
     if OR_KEY:
         attempts.append(("https://openrouter.ai/api/v1/chat/completions",
-                         {"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
-                         "meta-llama/llama-3.3-70b-instruct:free"))
-    for url, headers, model in attempts:
+                         {"Authorization": f"Bearer {OR_KEY}", 
+                          "HTTP-Referer": "https://github.com"},
+                         "meta-llama/llama-3.3-70b-instruct:free", 
+                         "OpenRouter"))
+    
+    for url, headers, model, provider_name in attempts:
         try:
+            log(f"🔄 Попытка генерации через {provider_name} ({model})...")
             r = requests.post(url, headers=headers,
                 json={"model": model, "temperature": 0.7,
-                      "messages": [{"role": "user", "content": prompt}]}, timeout=120).json()
-            res = r["choices"][0]["message"]["content"].strip()
+                      "messages": [{"role": "user", "content": prompt}]}, 
+                timeout=120)
+            
+            # Проверяем HTTP статус
+            if r.status_code != 200:
+                log(f"⚠️ {provider_name} вернул код {r.status_code}: {r.text[:200]}")
+                continue
+            
+            data = r.json()
+            
+            # Проверяем наличие choices
+            if "choices" not in data or not data["choices"]:
+                log(f"⚠️ {provider_name} не вернул choices. Ответ: {str(data)[:300]}")
+                continue
+            
+            res = data["choices"][0]["message"]["content"].strip()
+            
             if res and len(res) > minlen:
-                log(f"✅ Успех: {model}, {len(res)} симв.")
+                log(f"✅ Успех: {provider_name}, {len(res)} симв.")
                 return res
+            else:
+                log(f"⚠️ {provider_name} вернул слишком короткий текст: {len(res)} симв.")
+                
+        except requests.exceptions.Timeout:
+            log(f"⚠️ {provider_name}: таймаут запроса (120 сек)")
+        except requests.exceptions.RequestException as e:
+            log(f"⚠️ {provider_name}: ошибка соединения - {e}")
+        except KeyError as e:
+            log(f"⚠️ {provider_name}: неожиданный формат ответа - ключ {e} не найден")
         except Exception as e:
-            log(f"️ Ошибка {model}: {e}")
+            log(f"⚠️ {provider_name}: непредвиденная ошибка - {e}")
+    
+    log("❌ Все попытки генерации статьи не удались")
     return None
 
 def generate_dzen_article(book):
