@@ -13,53 +13,51 @@ def log(msg): print(msg, flush=True)
 log("Версия ℹ️ dzen-agent v3 (полноценные статьи 3000+ символов, RSS с guid)")
 
 def ai_call(prompt, minlen=2000):
-    """Генерация длинной статьи для Дзена с бесплатными моделями OpenRouter"""
-    attempts = []
-def ai_call(prompt, minlen=2000):
-    """Генерация статьи через Pollinations Text API (бесплатно, без ключей)"""
+    """Генерация длинной статьи для Дзена (используем GROQ_KEY2 и OPENROUTER_KEY2)"""
     attempts = []
     
-    # 1. Pollinations Text API — полностью бесплатно, без ключей
-    attempts.append((
-        "https://text.pollinations.ai/openai",
-        {},  # без авторизации
-        "openai",  # модель
-        "Pollinations (OpenAI)"
-    ))
-    attempts.append((
-        "https://text.pollinations.ai/openai",
-        {},
-        "mistral",  # модель Mistral
-        "Pollinations (Mistral)"
-    ))
+    # Используем ВТОРЫЕ токены для Дзена
+    GROQ_KEY2 = os.environ.get("GROQ_KEY2", "")
+    OR_KEY2 = os.environ.get("OPENROUTER_KEY2", "")
     
-    # 2. OpenRouter — если есть баланс (без :free)
-    if OR_KEY:
+    if GROQ_KEY2:
+        attempts.append((
+            "https://api.groq.com/openai/v1/chat/completions",
+            {"Authorization": f"Bearer {GROQ_KEY2}"},
+            "llama-3.3-70b-versatile",
+            "Groq (Key2)"
+        ))
+    
+    if OR_KEY2:
         attempts.append((
             "https://openrouter.ai/api/v1/chat/completions",
-            {"Authorization": f"Bearer {OR_KEY}", "HTTP-Referer": "https://github.com"},
-            "meta-llama/llama-3.1-8b-instruct",  # без :free, стоит копейки
-            "OpenRouter (Llama 3.1)"
+            {"Authorization": f"Bearer {OR_KEY2}", "HTTP-Referer": "https://github.com"},
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "OpenRouter (Llama 3.3 Key2)"
+        ))
+        attempts.append((
+            "https://openrouter.ai/api/v1/chat/completions",
+            {"Authorization": f"Bearer {OR_KEY2}", "HTTP-Referer": "https://github.com"},
+            "google/gemma-3-27b-it:free",
+            "OpenRouter (Gemma 3 Key2)"
+        ))
+        attempts.append((
+            "https://openrouter.ai/api/v1/chat/completions",
+            {"Authorization": f"Bearer {OR_KEY2}", "HTTP-Referer": "https://github.com"},
+            "deepseek/deepseek-chat-v3-0324:free",
+            "OpenRouter (DeepSeek Key2)"
         ))
     
     for url, headers, model, provider_name in attempts:
         try:
             log(f"🔄 Попытка через {provider_name} ({model})...")
             
-            if "pollinations" in url:
-                # Pollinations использует формат OpenAI
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.8
-                }
-            else:
-                payload = {
-                    "model": model,
-                    "temperature": 0.8,
-                    "max_tokens": 4000,
-                    "messages": [{"role": "user", "content": prompt}]
-                }
+            payload = {
+                "model": model,
+                "temperature": 0.8,
+                "max_tokens": 4000,
+                "messages": [{"role": "user", "content": prompt}]
+            }
             
             r = requests.post(url, headers=headers, json=payload, timeout=120)
             
@@ -70,7 +68,7 @@ def ai_call(prompt, minlen=2000):
             data = r.json()
             
             if "choices" not in data or not data["choices"]:
-                log(f"⚠️ {provider_name}: нет choices")
+                log(f"️ {provider_name}: нет choices")
                 continue
             
             res = data["choices"][0]["message"]["content"].strip()
