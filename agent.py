@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
-import os, json, datetime, requests, time, urllib3
-from email.utils import formatdate
+import os, json, datetime, requests, time, glob, urllib3
+from email.utils import formatdate, parsedate_to_datetime
 urllib3.disable_warnings()
 
 GROQ_KEY = os.environ.get("GROQ_KEY", "").strip()
 OR_KEY   = os.environ.get("OPENROUTER_KEY", "").strip()
-# Отдельные токены для тизеров (если заданы), иначе общие
 GROQ_KEY_T = os.environ.get("GROQ_KEY_TEASER", "").strip() or GROQ_KEY
 OR_KEY_T   = os.environ.get("OPENROUTER_KEY_TEASER", "").strip() or OR_KEY
 
@@ -19,13 +18,14 @@ PAGES_BASE = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
 MAX_HOSTS = ["https://botapi.max.ru", "https://platform-api2.max.ru"]
 TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
 RU = "\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
+MIN_DZEN_ITEMS = 10
 REPORT = []
 MAX_HEADERS = {}
 
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v23 (отдельные токены для тизеров + самодиагностика TG/MAX)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v24 (RSS под требования Дзена: content:encoded, ЧПУ, без капса и внешних ссылок, авто-добор до 10)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -64,8 +64,7 @@ def ai_text(prompt, minlen=600):
         ("openrouter", "auto", OR_KEY_T)
     ]
     for provider, model, key in models:
-        if not key:
-            continue
+        if not key: continue
         try:
             res = ai_groq(prompt, model, key) if provider == "groq" else ai_openrouter(prompt, model, key)
             if res and len(res) > minlen:
@@ -84,8 +83,7 @@ def ai_scene(prompt):
         ("openrouter", "auto", OR_KEY_T)
     ]
     for provider, model, key in models:
-        if not key:
-            continue
+        if not key: continue
         try:
             res = ai_groq(prompt, model, key, suffix="") if provider == "groq" else ai_openrouter(prompt, model, key, suffix="")
             if res and len(res) > 15:
@@ -102,6 +100,61 @@ def trim_text(t, limit):
     c = t[:limit]
     i = max(c.rfind("."), c.rfind("!"), c.rfind("?"), c.rfind("\n"))
     return (c[:i+1] if i > limit//2 else c).rstrip()
+
+# ============================================================
+# САНИТАЙЗЕРЫ ПОД ТРЕБОВАНИЯ ДЗЕНА
+# ============================================================
+
+def fix_title(t):
+    """КАПС-заголовок -> обычное предложение (Дзен не любит капс)."""
+    t = t.strip()
+    if not t.isupper():
+        return t
+    out, done = [], False
+    for ch in t:
+        if not done and ch.isalpha():
+            out.append(ch.upper()); done = True
+        else:
+            out.append(ch.lower())
+    return "".join(out)
+
+def strip_promo(text):
+    """Убирает из тела статьи ссылки на ЛитРес и хэштеги (внешняя реклама в контенте)."""
+    parts = text.replace("<br><br>", "\n\n").split("\n\n")
+    keep = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        if "litres.ru" in p or "литрес" in p.lower():
+            continue
+        if p.startswith("#") and " " not in p.strip("#"):
+            continue
+        if p.count("#") >= 2 and p.replace("#", "").replace(" ", "") .isalnum() and len(p) < 120 and p.startswith("#"):
+            continue
+        keep.append(p)
+    return keep
+
+def to_content_html(text, img_url):
+    """Полный текст статьи в разрешённом Дзеном HTML: figure + p."""
+    paras = strip_promo(text)
+    if not paras:
+        paras = [text[:500]]
+    body = ""
+    if img_url:
+        body += f'<figure><img src="{img_url}"></figure>\n'
+    for p in paras:
+        p = p.replace("**", "").replace("##", "")
+        body += f"<p>{p}</p>\n"
+    return body
+
+def to_plain(text, limit=250):
+    txt = " ".join(strip_promo(text))
+    txt = txt.replace("**", "").replace("##", "")
+    return txt[:limit].rstrip() + ("…" if len(txt) > limit else "")
+
+def esc(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 # ============================================================
 # САМОДИАГНОСТИКА МЕССЕНДЖЕРОВ
@@ -153,9 +206,9 @@ def build_long_article(book, mode, day):
     base = (f"Напиши развёрнутую статью для Дзена о романе Павла Гнесюка «{t}» (серия «{s}»). "
             f"Текст ПОЛНОСТЬЮ уникальный, живой, как литературный блог. "
             f"Требования: 1. ТОЛЬКО русский язык. 2. Длина СТРОГО 2500-4000 символов. "
-            f"3. Первая строка — заголовок ЗАГЛАВНЫМИ буквами, без ** и ##. "
+            f"3. Первая строка — заголовок ОБЫЧНЫМИ буквами (только первое слово с заглавной), без ** и ##, БЕЗ капса. "
             f"4. Не пиши «как я писал книгу» — пиши как литературный обозреватель. "
-            f"5. В конце обязательно: «Читайте роман «{t}» на ЛитРес: {u}». ")
+            f"5. Никаких внешних ссылок в тексте. ")
     if mode == "quote" and book.get("fragments"):
         fr = book["fragments"][day % len(book["fragments"])]
         prompt = (base + f"Тип: РАЗБОР ЦИТАТЫ. Цитата: «{fr}» — раскрой смысл, атмосферу, связь с сюжетом ({a}). 4-6 абзацев.")
@@ -175,11 +228,10 @@ def build_long_article(book, mode, day):
     txt = ai_text(prompt, minlen=1500)
     if not txt:
         log("⚠️ ИИ недоступны. Стандартная длинная статья.")
-        txt = (f"РОМАН «{t.upper()}»: ИСТОРИЯ, КОТОРАЯ ЗАТЯГИВАЕТ\n\n{a}\n\n"
+        txt = (f"Роман «{t}»: история, которая затягивает\n\n{a}\n\n"
                f"Роман «{t}» из серии «{s}» — захватывающее путешествие, полное тайн и неожиданных поворотов. "
                f"Герои, которым сопереживаешь, мир, в который веришь, и интрига, которая не отпускает до последней страницы. "
-               f"Каждая глава добавляет новые вопросы, а ответы оказываются совсем не такими, как ждёшь.\n\n"
-               f"Читайте роман «{t}» на ЛитРес: {u}")
+               f"Каждая глава добавляет новые вопросы, а ответы оказываются совсем не такими, как ждёшь.")
     return clean_txt(txt) + f"\n\n{TAGS}", theme
 
 def build_teaser(book, long_title):
@@ -206,11 +258,8 @@ def build_scene(teaser_text):
         log(f"🎨 Сцена для картинки: {scene[:120]}")
     return scene
 
-def esc(s):
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
 # ============================================================
-# ПУБЛИКАЦИЯ: TELEGRAM
+# ПУБЛИКАЦИЯ: TELEGRAM / MAX
 # ============================================================
 
 def tg_post_channel(img_bytes, caption):
@@ -221,10 +270,6 @@ def tg_post_channel(img_bytes, caption):
         log(f"⚠️ TG sendPhoto ошибка: {str(r)[:200]}")
         return
     log("✅ Тизер опубликован в Telegram-канал")
-
-# ============================================================
-# ПУБЛИКАЦИЯ: MAX
-# ============================================================
 
 def max_api(path, payload=None, params=None):
     errs = []
@@ -262,7 +307,6 @@ def max_post_channel(caption, img_url, poll_url):
     if chat_id is None:
         log("⚠️ MAX: не найден канал (бот не админ? задайте MAX_CHAT_ID)")
         return
-
     for i, u in enumerate([poll_url, img_url], 1):
         body = {"text": caption,
                 "attachments": [{"type": "image", "payload": {"url": u}}],
@@ -273,12 +317,11 @@ def max_post_channel(caption, img_url, poll_url):
             return
         log(f"⚠️ MAX: вариант {i} не прошёл: {str(res)[:80]}")
         time.sleep(2)
-
     res = max_api("/messages", payload={"text": caption}, params={"chat_id": chat_id})
     log(f"✅ MAX: отправлен текст без картинки: {str(res)[:100]}")
 
 # ============================================================
-# САЙТ, RSS, ВИТРИНА
+# СТРАНИЦЫ САЙТА
 # ============================================================
 
 def build_article_page(title, img_url, body_html, litres_url):
@@ -296,6 +339,24 @@ def build_article_page(title, img_url, body_html, litres_url):
 <img src="{img_url}" style="width:100%;border-radius:10px">
 <div>{body_html}</div>
 <p><a href="{litres_url}" style="color:#7ab8ff">📖 Читать роман на ЛитРес</a></p>
+</article>
+</body>
+</html>"""
+
+def build_backfill_page(title, img_url, body_html):
+    """Страница-дополнение для Дзена: БЕЗ внешних ссылок."""
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+</head>
+<body style="font-family:Georgia,serif;background:#141414;color:#eee;margin:0;padding:20px">
+<article style="max-width:800px;margin:0 auto">
+<h1>{title}</h1>
+<img src="{img_url}" style="width:100%;border-radius:10px">
+<div>{body_html}</div>
 </article>
 </body>
 </html>"""
@@ -330,6 +391,69 @@ h1{{margin:0 0 8px}}
 </html>"""
 
 # ============================================================
+# ПОДГОТОВКА ПОСТОВ ДЛЯ RSS (санитайз + авто-добор до 10)
+# ============================================================
+
+def sanitize_posts(posts):
+    """Чинит старые записи: ссылки на свой сайт, уникальные guid, заголовки без капса."""
+    seen, out = set(), []
+    for it in posts:
+        g = it.get("guid", "")
+        if not g or g in seen:
+            continue
+        seen.add(g)
+        it = dict(it)
+        it["title"] = fix_title(it.get("title", ""))
+        link = it.get("link", "")
+        if not link.startswith(PAGES_BASE):
+            if g.startswith("pavel-gnesyuk-") and g.rsplit("-", 1)[-1].isdigit():
+                link = f"{PAGES_BASE}/a/{g.rsplit('-', 1)[-1]}.html"
+            else:
+                continue  # запись без своей страницы в RSS не попадёт
+        it["link"] = link
+        out.append(it)
+    return out
+
+def backfill_posts(posts, books):
+    """Если материалов меньше 10 (требование Дзена) — добавляет страницы из аннотаций."""
+    have_titles = {p["title"].lower() for p in posts}
+    have_books = set()
+    for p in posts:
+        for b in books:
+            if b["title"].lower() in p["title"].lower():
+                have_books.add(b["title"])
+    imgs = sorted(glob.glob("img/vk_*.jpg"))
+    img_url = f"{PAGES_BASE}/{imgs[-1]}" if imgs else f"{PAGES_BASE}/img/cover.jpg"
+    i = 0
+    for b in books:
+        if len(posts) >= MIN_DZEN_ITEMS:
+            break
+        if b["title"] in have_books or b["title"].lower() in have_titles:
+            continue
+        i += 1
+        slug = f"backfill-{i}"
+        page = f"a/{slug}.html"
+        frags = b.get("fragments", [])
+        body = "<p>" + b["about"] + "</p>"
+        if frags:
+            body += f"\n<blockquote>{frags[0]}</blockquote>"
+            body += f"\n<p>{frags[1] if len(frags) > 1 else frags[0]}</p>"
+        os.makedirs("a", exist_ok=True)
+        with open(page, "w", encoding="utf-8") as f:
+            f.write(build_backfill_page(f"{b['title']} — {b['series']}: о чём роман", img_url, body))
+        posts.append({
+            "guid": f"pavel-gnesyuk-{slug}",
+            "title": f"{b['title']} — {b['series']}: о чём роман",
+            "text_html": b["about"] + "<br><br>" + (frags[0] if frags else ""),
+            "img": img_url,
+            "size": 0,
+            "link": f"{PAGES_BASE}/{page}",
+            "pubdate": formatdate(time.time() - i * 86400, usegmt=True)
+        })
+        log(f"📚 Авто-добор для Дзена: {page}")
+    return posts
+
+# ============================================================
 # ГЛАВНАЯ ЛОГИКА
 # ============================================================
 
@@ -347,7 +471,7 @@ def main():
     max_ok = max_check()
 
     long_text, theme = build_long_article(book, mode, day)
-    long_title = long_text.split("\n")[0][:150]
+    long_title = fix_title(long_text.split("\n")[0][:150])
     log(f"📰 Заголовок статьи: {long_title}")
 
     teaser = build_teaser(book, long_title)
@@ -393,7 +517,8 @@ def main():
     body_html = esc(long_text).replace("\n", "<br><br>")
     os.makedirs("a", exist_ok=True)
     page_path = f"a/{day}.html"
-    open(page_path, "w", encoding="utf-8").write(build_article_page(long_title, img_url, body_html, book["url"]))
+    with open(page_path, "w", encoding="utf-8") as f:
+        f.write(build_article_page(long_title, img_url, body_html, book["url"]))
     page_url = f"{PAGES_BASE}/a/{day}.html"
     log(f"✅ Страница статьи: {page_path}")
 
@@ -414,34 +539,42 @@ def main():
         "link": page_url,
         "pubdate": formatdate(time.time(), usegmt=True)
     })
+    posts = sanitize_posts(posts)
+    posts = backfill_posts(posts, books)
     posts = posts[:30]
     json.dump(posts, open("posts.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
     items = ""
     for it in posts:
+        content_html = to_content_html(it.get("text_html", ""), it.get("img", ""))
+        desc = to_plain(it.get("text_html", ""))
+        size = it.get("size") or 0
         items += f"""  <item>
     <title>{esc(it['title'])}</title>
     <link>{it['link']}</link>
     <guid isPermaLink="false">{it['guid']}</guid>
     <pubDate>{it['pubdate']}</pubDate>
-    <description><![CDATA[<img src="{it['img']}" width="1200"><br><br>{it['text_html']}]]></description>
-    <media:content url="{it['img']}" type="image/jpeg" medium="image"/>
-    <enclosure url="{it['img']}" type="image/jpeg" length="{it['size']}"/>
+    <description>{esc(desc)}</description>
+    <enclosure url="{it['img']}" type="image/jpeg" length="{size}"/>
+    <content:encoded><![CDATA[{content_html}]]></content:encoded>
   </item>
 """
     rss = f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:media="http://search.yahoo.com/mrss/" xmlns:atom="http://www.w3.org/2005/Atom">
 <channel>
 <title>Павел Гнесюк — литературный блог</title>
-<link>https://pavrus-ai.github.io/pavel-gnesyuk-dzen/</link>
+<link>{PAGES_BASE}/</link>
 <description>Статьи о романах Павла Гнесюка: сюжет, герои, цитаты, миры и интриги.</description>
 <language>ru</language>
 {items}</channel>
 </rss>
 """
-    open("rss.xml", "w", encoding="utf-8").write(rss)
-    open("index.html", "w", encoding="utf-8").write(build_index(posts, meta))
-    log(f"✅ RSS обновлён: статей в ленте: {len(posts)}")
+    with open("rss.xml", "w", encoding="utf-8") as f:
+        f.write(rss)
+    with open("index.html", "w", encoding="utf-8") as f:
+        f.write(build_index(posts, meta))
+    log(f"✅ RSS обновлён: материалов в ленте: {len(posts)} (минимум для Дзена: {MIN_DZEN_ITEMS})")
     log("✅ index.html обновлён (витрина статей)")
     log("=" * 50)
     log("✅ FINISH: статья → RSS+сайт, тизер → Telegram и MAX!")
