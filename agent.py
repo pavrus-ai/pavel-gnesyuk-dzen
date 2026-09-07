@@ -5,22 +5,23 @@ urllib3.disable_warnings()
 
 GROQ_KEY = os.environ.get("GROQ_KEY", "")
 OR_KEY   = os.environ.get("OPENROUTER_KEY", "")
-TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TG_CHANNEL = os.environ.get("TELEGRAM_CHANNEL", "")
+TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+TG_CHANNEL = os.environ.get("TELEGRAM_CHANNEL", "").strip()
 MAX_TOKEN = os.environ.get("MAX_TOKEN", "").strip()
 MAX_CHAT_ID = os.environ.get("MAX_CHAT_ID", "").strip()
-
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 PAGES_BASE = "https://pavrus-ai.github.io/pavel-gnesyuk-dzen"
-MAX_HOSTS = ["https://platform-api2.max.ru", "https://botapi.max.ru"]
+MAX_HOSTS = ["https://botapi.max.ru", "https://platform-api2.max.ru"]
 TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
 RU = "\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
 REPORT = []
 
+MAX_HEADERS = {}  # заполнится самодиагностикой
+
 def log(msg):
     print(msg, flush=True); REPORT.append(msg)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v21 (flux 1280x960 резкие сцены + MAX по прогретой ссылке)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v22 (самодиагностика Telegram и MAX на старте)")
 
 def _extract(r):
     try: return r["choices"][0]["message"]["content"].strip()
@@ -86,13 +87,60 @@ def ai_scene(prompt):
     return None
 
 def clean_txt(t):
-    return t.replace("**","").replace("##","").strip()
+    return t.replace("**", "").replace("##", "").strip()
 
 def trim_text(t, limit):
     if len(t) <= limit: return t
     c = t[:limit]
     i = max(c.rfind("."), c.rfind("!"), c.rfind("?"), c.rfind("\n"))
     return (c[:i+1] if i > limit//2 else c).rstrip()
+
+# ============================================================
+# САМОДИАГНОСТИКА МЕССЕНДЖЕРОВ
+# ============================================================
+
+def tg_check():
+    """Проверка токена и канала Telegram до публикации."""
+    if not TG_TOKEN or not TG_CHANNEL:
+        log("⚠️ DIAG: TELEGRAM_TOKEN или TELEGRAM_CHANNEL не заданы в env воркфлоу!")
+        return False
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{TG_TOKEN}/getMe", timeout=30).json()
+        if not r.get("ok"):
+            log(f"⚠️ DIAG: TG токен недействителен: {str(r)[:150]}")
+            return False
+        log(f"✅ DIAG: TG токен рабочий, бот @{r['result'].get('username')}")
+    except Exception as e:
+        log(f"⚠️ DIAG: TG getMe ошибка сети: {e}")
+        return False
+    if not (TG_CHANNEL.startswith("@") or TG_CHANNEL.startswith("-100")):
+        log(f"⚠️ DIAG: TELEGRAM_CHANNEL='{TG_CHANNEL}' похож на ошибку: нужно '@имя' или '-100…'")
+    return True
+
+def max_check():
+    """Перебор стилей авторизации MAX (обычный токен / Bearer)."""
+    global MAX_HEADERS
+    if not MAX_TOKEN:
+        log("⚠️ DIAG: MAX_TOKEN не задан в env воркфлоу!")
+        return False
+    for style in ("plain", "bearer"):
+        headers = {"Authorization": MAX_TOKEN} if style == "plain" else {"Authorization": f"Bearer {MAX_TOKEN}"}
+        for host in MAX_HOSTS:
+            try:
+                r = requests.get(host + "/me", headers=headers, timeout=30, verify=False)
+                j = r.json()
+                if r.status_code == 200 and not j.get("code"):
+                    MAX_HEADERS = headers
+                    log(f"✅ DIAG: MAX токен рабочий (auth={style}, host={host})")
+                    return True
+            except Exception:
+                continue
+    log("⚠️ DIAG: MAX /me не ответил ни с обычным токеном, ни с Bearer — проверьте MAX_TOKEN")
+    return False
+
+# ============================================================
+# ТЕКСТЫ ПОСТОВ
+# ============================================================
 
 def build_long_article(book, mode, day):
     t, a, u, s = book["title"], book["about"], book["url"], book["series"]
@@ -153,29 +201,33 @@ def build_scene(teaser_text):
     return scene
 
 def esc(s):
-    return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+# ============================================================
+# ПУБЛИКАЦИЯ: TELEGRAM
+# ============================================================
 
 def tg_post_channel(img_bytes, caption):
-    if not TG_TOKEN or not TG_CHANNEL:
-        log("⚠️ Нет TELEGRAM_TOKEN/TELEGRAM_CHANNEL — пропуск Telegram")
-        return
     r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto",
-                      data={"chat_id": TG_CHANNEL, "caption": caption},
-                      files={"photo": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120).json()
+        data={"chat_id": TG_CHANNEL, "caption": caption},
+        files={"photo": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120).json()
     if not r.get("ok"):
-        log(f"⚠️ TG sendPhoto: {str(r)[:100]}")
+        log(f"⚠️ TG sendPhoto ошибка: {str(r)[:200]}")
         return
     log("✅ Тизер опубликован в Telegram-канал")
 
+# ============================================================
+# ПУБЛИКАЦИЯ: MAX
+# ============================================================
+
 def max_api(path, payload=None, params=None):
-    headers = {"Authorization": MAX_TOKEN}
     errs = []
     for host in MAX_HOSTS:
         try:
             if payload is not None:
-                r = requests.post(host + path, headers=headers, params=params, json=payload, timeout=30, verify=False)
+                r = requests.post(host + path, headers=MAX_HEADERS, params=params, json=payload, timeout=30, verify=False)
             else:
-                r = requests.get(host + path, headers=headers, params=params, timeout=30, verify=False)
+                r = requests.get(host + path, headers=MAX_HEADERS, params=params, timeout=30, verify=False)
             j = r.json()
             if j.get("code") == "too.many.requests":
                 log("⏳ MAX: лимит запросов, жду 4 сек...")
@@ -189,11 +241,7 @@ def max_api(path, payload=None, params=None):
     log(f"⚠️ MAX {path}: {' | '.join(errs)}")
     return None
 
-def max_post_channel(img_bytes, caption, img_url, poll_url):
-    """Пост в MAX: картинка внешней ссылкой (pollinations уже закэширован нами)"""
-    if not MAX_TOKEN:
-        log("⚠️ Нет MAX_TOKEN — пропуск MAX")
-        return
+def max_post_channel(caption, img_url, poll_url):
     chat_id = None
     chats = max_api("/chats")
     if chats:
@@ -204,9 +252,11 @@ def max_post_channel(img_bytes, caption, img_url, poll_url):
                 break
     if chat_id is None and MAX_CHAT_ID:
         chat_id = int(MAX_CHAT_ID)
+        log(f"ℹ️ MAX: канал из секрета MAX_CHAT_ID: {chat_id}")
     if chat_id is None:
-        log("⚠️ MAX: нет канала для публикации")
+        log("⚠️ MAX: не найден канал (бот не админ? задайте MAX_CHAT_ID)")
         return
+
     for i, u in enumerate([poll_url, img_url], 1):
         body = {"text": caption,
                 "attachments": [{"type": "image", "payload": {"url": u}}],
@@ -217,8 +267,13 @@ def max_post_channel(img_bytes, caption, img_url, poll_url):
             return
         log(f"⚠️ MAX: вариант {i} не прошёл: {str(res)[:80]}")
         time.sleep(2)
+
     res = max_api("/messages", payload={"text": caption}, params={"chat_id": chat_id})
-    log(f"✅ MAX: отправлен текст: {str(res)[:100]}")
+    log(f"✅ MAX: отправлен текст без картинки: {str(res)[:100]}")
+
+# ============================================================
+# САЙТ, RSS, ВИТРИНА
+# ============================================================
 
 def build_article_page(title, img_url, body_html, litres_url):
     return f"""<!DOCTYPE html>
@@ -268,6 +323,10 @@ h1{{margin:0 0 8px}}
 </body>
 </html>"""
 
+# ============================================================
+# ГЛАВНАЯ ЛОГИКА
+# ============================================================
+
 def main():
     books = json.load(open("books.json", encoding="utf-8"))["books"]
     day = datetime.date.today().toordinal()
@@ -277,6 +336,10 @@ def main():
     if mode == "quote" and not book.get("fragments"):
         mode = "plot"
     log(f"📚 Книга дня: «{book['title']}» ({book['series']}) | Тип: {mode}")
+
+    # --- Самодиагностика мессенджеров ДО тяжёлой работы ---
+    tg_ok = tg_check()
+    max_ok = max_check()
 
     long_text, theme = build_long_article(book, mode, day)
     long_title = long_text.split("\n")[0][:150]
@@ -291,7 +354,7 @@ def main():
     teaser_trim = trim_text(teaser, 1024 - len(link_part))
     caption = teaser_trim + link_part
 
-    # --- Сцена для картинки по тексту тизера ---
+    # --- Картинка ---
     scene = build_scene(teaser)
     base_img = scene if scene else theme
     clean_img = "".join(c for c in base_img if c.isalnum() or c.isspace() or c in ".,-")[:220].strip()
@@ -302,7 +365,8 @@ def main():
     run_no = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
     seed = day + 2000000 + (run_no % 100)
     fname = f"img/{day}_{run_no % 1000}.jpg"
-    url = (POLLINATIONS_API + requests.utils.quote(p) + f"?nologo=true&seed={seed}&model=flux&width=1280&height=960")
+    url = (POLLINATIONS_API + requests.utils.quote(p) +
+           f"?nologo=true&seed={seed}&model=flux&width=1280&height=960")
     log("Скачивание картинки (flux, 1280x960)...")
     r = requests.get(url, timeout=240)
     r.raise_for_status()
@@ -314,8 +378,14 @@ def main():
     log(f"✅ Картинка: {fname} ({len(img_bytes)} байт)")
 
     # --- Публикации в мессенджеры ---
-    tg_post_channel(img_bytes, caption)
-    max_post_channel(img_bytes, caption, img_url, url)
+    if tg_ok:
+        tg_post_channel(img_bytes, caption)
+    else:
+        log("⚠️ Telegram пропущен (см. DIAG выше)")
+    if max_ok:
+        max_post_channel(caption, img_url, url)
+    else:
+        log("⚠️ MAX пропущен (см. DIAG выше)")
 
     # --- Страница статьи на своём сайте ---
     body_html = esc(long_text).replace("\n", "<br><br>")
@@ -345,6 +415,7 @@ def main():
     })
     posts = posts[:30]
     json.dump(posts, open("posts.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+
     items = ""
     for it in posts:
         items += f"""  <item>
@@ -360,10 +431,10 @@ def main():
     rss = f"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
 <channel>
-  <title>Павел Гнесюк — литературный блог</title>
-  <link>https://pavrus-ai.github.io/pavel-gnesyuk-dzen/</link>
-  <description>Статьи о романах Павла Гнесюка: сюжет, герои, цитаты, миры и интриги.</description>
-  <language>ru</language>
+<title>Павел Гнесюк — литературный блог</title>
+<link>https://pavrus-ai.github.io/pavel-gnesyuk-dzen/</link>
+<description>Статьи о романах Павла Гнесюка: сюжет, герои, цитаты, миры и интриги.</description>
+<language>ru</language>
 {items}</channel>
 </rss>
 """
