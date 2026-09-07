@@ -26,6 +26,9 @@ jobs:
           GROQ_KEY: ${{ secrets.GROQ_KEY }}
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          GROQ_KEY_TEASER: ${{ secrets.GROQ_KEY_TEASER }}
+          OPENROUTER_KEY_TEASER: ${{ secrets.OPENROUTER_KEY_TEASER }}
+        
           TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
           MAX_TOKEN: ${{ secrets.MAX_TOKEN }}
           MAX_CHAT_ID: ${{ secrets.MAX_CHAT_ID }}
