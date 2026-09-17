@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os, json, datetime, requests, time, io, glob, base64, uuid, urllib3
+import html as htmllib
 from PIL import Image
 urllib3.disable_warnings()
 
@@ -18,10 +19,14 @@ TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MAX_TOKEN = os.environ.get("MAX_BOT_TOKEN", "").strip()
 MAX_CHAT = os.environ.get("MAX_CHAT_ID", "").strip()
 
+GH_PAGES = os.environ.get("GH_PAGES", "https://pavrus-ai.github.io/pavel-gnesyuk-dzen").rstrip("/")
+POSTS_FILE = "posts.json"
+RSS_FILE = "rss.xml"
+RSS_TITLE = "Павел Гнесюк — романы и истории"
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
 RU = "\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
-MIN_BRIGHTNESS = 90
+MIN_BRIGHTNESS = 70
 
 GROQ_MODELS = ["meta-llama/llama-4-scout-17b-16e-instruct",
                "meta-llama/llama-4-maverick-17b-128e-instruct",
@@ -31,7 +36,7 @@ GROQ_MODELS = ["meta-llama/llama-4-scout-17b-16e-instruct",
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v26 (только TG + MAX; GigaChat 500-700; pollinations+обрезка; без RSS)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v27 (текст 800-1100 + авторасширение; картинка-замануха 16:9; MAX с диагностикой chat_id; RSS для Дзена возвращён)")
 
 # ============================================================
 # ИИ-ТЕКСТ: ступени с диагностикой
@@ -168,7 +173,7 @@ def ai_pollinations_text(prompt):
         log(f"   ⚠️ pollinations-text: {str(e)[:80]}")
     return None
 
-def ai_text(prompt, minlen=200, rescue_min=150):
+def ai_text(prompt, minlen=600, rescue_min=300):
     best_res = ""
 
     def take(res, label):
@@ -222,6 +227,21 @@ def ai_text(prompt, minlen=200, rescue_min=150):
         return best_res
     return None
 
+def extend_text(txt, target):
+    """v27: если текст короче целевого — один запрос GigaChat на расширение."""
+    if not txt or len(txt) >= target:
+        return txt
+    log(f"✂️ Текст короткий ({len(txt)} < {target}) — прошу GigaChat расширить")
+    ext = ai_gigachat(
+        f"Расширь следующий пост до {target}-{target+300} символов, сохранив стиль, структуру, "
+        f"заголовок и смысл. Добавь 2-3 абзаца: детали сюжета, атмосферу, интригу, вопросы к читателю. "
+        f"Не добавляй хэштеги и символы ** и #.\n\nТЕКСТ:\n{txt}")
+    if ext and len(ext) >= target:
+        log(f"✅ Расширено: {len(ext)} симв.")
+        return ext
+    log("⚠️ Расширение не удалось — оставляю как есть")
+    return txt
+
 def clean_txt(t):
     return t.replace("**", "").replace("##", "").replace("#", "").strip()
 
@@ -232,41 +252,45 @@ def trim_text(t, limit):
     return (c[:i+1] if i > limit//2 else c).rstrip()
 
 # ============================================================
-# ТЕКСТЫ ПОСТОВ (500-700 симв.)
+# ТЕКСТЫ ПОСТОВ (v27: 800-1100 симв.)
 # ============================================================
 
 def build_post(book):
     t, a, s = book["title"], book["about"], book["series"]
     prompt = (f"Напиши пост-анонс о романе Павла Гнесюка «{t}» (серия «{s}»). "
               f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. 2. Первая строка — заголовок ЗАГЛАВНЫМИ "
-              f"буквами, без ** и ##. 3. Текст 500-700 символов, интригующий, живой. "
-              f"4. Закончи вопросом или крючком.")
-    txt = ai_text(prompt, minlen=200, rescue_min=150)
+              f"буквами, без ** и ##. 3. Текст СТРОГО 800-1100 символов, 4-6 абзацев, интригующий, живой. "
+              f"4. Раскрой завязку, добавь 2-3 вопроса-крючка и атмосферу. "
+              f"5. Закончи сильной строкой-призывом читать дальше.")
+    txt = ai_text(prompt, minlen=600, rescue_min=300)
     if not txt:
         log("⚠️ Пост не создан — стандартный текст.")
         txt = f"РОМАН «{t.upper()}»: ИСТОРИЯ, КОТОРАЯ ЗАТЯГИВАЕТ\n\n{a}"
+    txt = extend_text(txt, 800)
     return clean_txt(txt)
 
 def build_quote_post(book, day):
     fr = book["fragments"][day % len(book["fragments"])]
     prompt = (f"Напиши пост: разбор цитаты из романа Павла Гнесюка «{book['title']}». "
               f"Цитата: «{fr}». Требования: 1. ТОЛЬКО русский язык. 2. Первая строка — заголовок ЗАГЛАВНЫМИ, "
-              f"без ** и ##. 3. 400-600 символов: раскрой смысл цитаты, атмосферу и интригу романа. "
+              f"без ** и ##. 3. 600-900 символов: раскрой смысл цитаты, атмосферу и интригу романа. "
               f"4. Сама цитата должна войти в текст поста.")
-    txt = ai_text(prompt, minlen=180, rescue_min=150)
+    txt = ai_text(prompt, minlen=500, rescue_min=300)
     if not txt:
         log("⚠️ Разбор цитаты не создан — стандартный пост.")
         return build_post(book)
+    txt = extend_text(txt, 600)
     return clean_txt(txt)
 
 def build_scene(post):
-    prompt = (f"Из текста ниже выбери ОДНУ атмосферную сцену и опиши её в 1-2 предложениях "
-              f"БЕЗ ЛЮДЕЙ и без лиц: только место, предметы, природа, погода, свет, детали интерьера.\n\n"
+    prompt = (f"Из текста ниже выбери ОДНУ самую интригующую сцену и опиши её в 1-2 предложениях "
+              f"для обложки-заманухи: драматичный момент, загадочный предмет или место, ощущение опасности или тайны. "
+              f"Люди — только силуэтом со спины или издалека, без лиц.\n\n"
               f"ТЕКСТ: {post[:1500]}")
     return ai_text(prompt, minlen=30, rescue_min=30)
 
 # ============================================================
-# КАРТИНКИ: gpt-image-1 → HF router (пропуск при 410) → pollinations+обрезка
+# КАРТИНКИ v27: замануха 16:9 (gpt-image-1 → HF router → pollinations+обрезка)
 # ============================================================
 
 def image_stats(img_bytes):
@@ -301,7 +325,7 @@ def openai_image(prompt):
     try:
         r = requests.post("https://api.openai.com/v1/images/generations",
             headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
-            json={"model": "gpt-image-1", "prompt": full, "n": 1, "size": "1024x1024"},
+            json={"model": "gpt-image-1", "prompt": full, "n": 1, "size": "1536x1024"},
             timeout=180).json()
         if "error" not in r:
             b64 = (r.get("data") or [{}])[0].get("b64_json")
@@ -337,7 +361,7 @@ def hf_image(prompt):
 
 def pollinations_image(scene, seed):
     url = (POLLINATIONS_API + requests.utils.quote(scene) +
-           f"?nologo=true&seed={seed}&model=flux&width=1280&height=960")
+           f"?nologo=true&seed={seed}&model=flux&width=1280&height=720")
     try:
         r = requests.get(url, timeout=240)
         r.raise_for_status()
@@ -347,12 +371,15 @@ def pollinations_image(scene, seed):
         return None
 
 def download_image(scene_text, seed):
+    """v27: промпт-замануха — драматичная обложка, а не пустой пейзаж."""
     clean_img = "".join(c for c in scene_text if c.isalnum() or c.isspace() or c in ".,-")[:220].strip()
-    p = ("Wide-angle cinematic landscape photograph, absolutely NO people, NO faces, NO portraits, "
-         "bright vivid saturated colors, high contrast, warm golden daylight, crisp sharp details. "
+    p = ("Eye-catching dramatic thriller book-cover style artwork: "
+         "one striking mysterious focal point (artifact, glowing object, door, silhouette of a person "
+         "seen from behind in the distance), cinematic moody lighting with a single bright accent, "
+         "ultra high contrast, rich saturated colors, strong sense of danger and mystery, "
+         "sharp focus on the focal point, composition draws the eye to the center. "
          "Scene: " + clean_img + ". "
-         "Empty space without humans, only environment and objects, eye-level wide shot, "
-         "no text, no watermark")
+         "No faces close-up, no text, no watermark")
     g = openai_image(p)
     if g:
         ok, bright = image_stats(g)
@@ -375,7 +402,7 @@ def download_image(scene_text, seed):
         if bright < MIN_BRIGHTNESS:
             log(f"⚠️ Слишком тёмная картинка (seed={seed}) — отбракована")
             return None
-        log(f"✅ Картинка: {len(g)} байт (seed={seed})")
+        log(f"✅ Картинка-замануха: {len(g)} байт (seed={seed})")
         return strip_watermark(g)
     return None
 
@@ -414,13 +441,14 @@ def tg_post(img_bytes, caption):
     return False
 
 # ============================================================
-# MAX MESSENGER
+# MAX MESSENGER (v27: диагностика chat_id в логе)
 # ============================================================
 
 def max_post(img_bytes, text):
     if not MAX_TOKEN or not MAX_CHAT:
         log("ℹ️ MAX_BOT_TOKEN/MAX_CHAT_ID не заданы — MAX пропущен")
         return False
+    log(f"ℹ️ MAX: целевой chat_id из секрета = {MAX_CHAT}")
     att = None
     if img_bytes:
         try:
@@ -435,8 +463,14 @@ def max_post(img_bytes, text):
                 if fid:
                     att = [{"type": "photo", "file_id": fid}]
                     log("✅ MAX: фото загружено на сервер")
+                else:
+                    log(f"⚠️ MAX upload: нет file_id в ответе: {str(r)[:120]}")
+            else:
+                log(f"⚠️ MAX uploads: нет url в ответе: {str(u)[:120]}")
         except Exception as e:
             log(f"⚠️ MAX upload: {str(e)[:100]}")
+    else:
+        log("ℹ️ MAX: картинки нет — шлю только текст")
     payload = {"chat_id": MAX_CHAT, "text": text[:4000]}
     if att:
         payload["attachments"] = att
@@ -444,12 +478,68 @@ def max_post(img_bytes, text):
         r = requests.post("https://botapi.max.ru/messages",
             params={"access_token": MAX_TOKEN}, json=payload, timeout=60).json()
         if r.get("success") or r.get("message"):
-            log(f"✅ MAX: сообщение отправлено в {MAX_CHAT}")
+            m = r.get("message") or {}
+            log(f"✅ MAX: сообщение принято (chat_id в ответе={m.get('chat_id')}, id={m.get('id')})")
             return True
         log(f"⚠️ MAX: {str(r)[:200]}")
     except Exception as e:
         log(f"⚠️ MAX ошибка: {e}")
     return False
+
+# ============================================================
+# ДЗЕН через RSS (v27: возвращён — Дзен принял ленту)
+# ============================================================
+
+def text_to_html(post, img_url, link):
+    parts = [f'<img src="{img_url}" width="100%"/>'] if img_url else []
+    for i, line in enumerate(post.split("\n")):
+        line = line.strip()
+        if not line:
+            continue
+        if i == 0:
+            parts.append(f"<h2>{htmllib.escape(line)}</h2>")
+        else:
+            parts.append(f"<p>{htmllib.escape(line)}</p>")
+    parts.append(f'<p><a href="{link}">Читать книгу на ЛитРес</a></p>')
+    return "".join(parts)
+
+def dzen_update(day, title, post, img_url, link):
+    try:
+        posts = json.load(open(POSTS_FILE, encoding="utf-8"))
+        if not isinstance(posts, list):
+            posts = []
+    except Exception:
+        posts = []
+    guid = f"gnesyuk-dzen-{day}"
+    posts = [p for p in posts if p.get("guid") != guid]
+    pub = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+    posts.insert(0, {"guid": guid, "title": title, "pubdate": pub,
+                     "img": img_url, "link": link,
+                     "text_html": text_to_html(post, img_url, link)})
+    posts = posts[:20]
+    json.dump(posts, open(POSTS_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+
+    items = []
+    for p in posts:
+        items.append(
+            "<item>"
+            f"<title>{htmllib.escape(p['title'])}</title>"
+            f"<link>{htmllib.escape(p['link'])}</link>"
+            f"<guid isPermaLink=\"false\">{htmllib.escape(p['guid'])}</guid>"
+            f"<pubDate>{p['pubdate']}</pubDate>"
+            f"<content:encoded><![CDATA[{p['text_html']}]]></content:encoded>"
+            "</item>")
+    rss = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+           "<rss version=\"2.0\" xmlns:content=\"http://purl.org/rss/1.0/modules/content/\">\n"
+           "<channel>"
+           f"<title>{htmllib.escape(RSS_TITLE)}</title>"
+           f"<link>{htmllib.escape(GH_PAGES)}</link>"
+           "<description>Новые посты о романах Павла Гнесюка</description>"
+           + "".join(items) +
+           "</channel>\n</rss>\n")
+    with open(RSS_FILE, "w", encoding="utf-8") as f:
+        f.write(rss)
+    log(f"✅ Дзен RSS: обновлён {RSS_FILE} ({len(posts)} записей, свежая: {guid})")
 
 # ============================================================
 # ГЛАВНАЯ ЛОГИКА
@@ -466,6 +556,7 @@ def main():
     else:
         post = build_post(book)
     log(f"✂️ Заголовок поста: {post.split(chr(10))[0][:150]}")
+    log(f"📝 Длина поста: {len(post)} симв.")
     link = book.get("url", "")
     link_part = f"\n\n📖 Читайте на ЛитРес: {link}" if link else ""
     caption = trim_text(post, 1000 - len(link_part) - len(TAGS) - 2) + link_part + "\n\n" + TAGS
@@ -481,13 +572,15 @@ def main():
             break
         log(f"⏳ Попытка {attempt + 1} не удалась, пробуем снова...")
 
+    img_url = ""
     if img_bytes:
         img_bytes = convert_to_jpeg(img_bytes)
         os.makedirs("img", exist_ok=True)
         path = f"img/dz_{day}.jpg"
         with open(path, "wb") as f:
             f.write(img_bytes)
-        log(f"💾 Картинка сохранена локально: {path}")
+        img_url = GH_PAGES + "/" + path
+        log(f"💾 Картинка сохранена: {path} → {img_url}")
     else:
         candidates = []
         for f in glob.glob("img/dz_*.jpg"):
@@ -501,14 +594,16 @@ def main():
             log(f"⚠️ Генерация не удалась — беру прежнюю картинку {pick}")
             with open(pick, "rb") as f:
                 img_bytes = f.read()
+            img_url = GH_PAGES + "/" + pick
         else:
             log("⚠️ Нет ни свежей, ни подходящей старой картинки")
 
     tg_post(img_bytes, caption)
     max_post(img_bytes, caption)
+    dzen_update(day, post.split("\n")[0], post, img_url, link)
 
     log("=" * 50)
-    log("✅ FINISH: книга → TG + MAX!")
+    log("✅ FINISH: книга → TG + MAX + Дзен(RSS)!")
     log("=" * 50)
 
 if __name__ == "__main__":
