@@ -33,10 +33,24 @@ GROQ_MODELS = ["meta-llama/llama-4-scout-17b-16e-instruct",
                "openai/gpt-oss-120b",
                "llama-3.1-8b-instant"]
 
+# v28: 7 приёмов заголовка — ротация по дням, заголовки всегда разные
+HEAD_STYLES = [
+    "острый вопрос к читателю",
+    "интрига: намёк на тайну, без раскрытия",
+    "парадокс или неожиданное утверждение",
+    "цитата героя + продолжение-интрига",
+    "предупреждение об опасности",
+    "шокирующий факт или число из мира книги",
+    "вызов читателю на «ты»",
+]
+
+def head_style(day, shift=0):
+    return HEAD_STYLES[(day + shift) % len(HEAD_STYLES)]
+
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v27 (текст 800-1100 + авторасширение; картинка-замануха 16:9; MAX с диагностикой chat_id; RSS для Дзена возвращён)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v28 (разные заголовки-крючки: 7 приёмов по дням; текст 800-1100; картинка-замануха 16:9; MAX с диагностикой; RSS для Дзена)")
 
 # ============================================================
 # ИИ-ТЕКСТ: ступени с диагностикой
@@ -90,7 +104,7 @@ def ai_gigachat(prompt):
     try:
         r = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"model": "GigaChat:latest", "temperature": 0.8, "max_tokens": 2000,
+            json={"model": "GigaChat:latest", "temperature": 0.9, "max_tokens": 2000,
                   "messages": [{"role": "user", "content": prompt + RU}]},
             timeout=90, verify=False)
         if r.status_code != 200:
@@ -228,7 +242,6 @@ def ai_text(prompt, minlen=600, rescue_min=300):
     return None
 
 def extend_text(txt, target):
-    """v27: если текст короче целевого — один запрос GigaChat на расширение."""
     if not txt or len(txt) >= target:
         return txt
     log(f"✂️ Текст короткий ({len(txt)} < {target}) — прошу GigaChat расширить")
@@ -252,14 +265,18 @@ def trim_text(t, limit):
     return (c[:i+1] if i > limit//2 else c).rstrip()
 
 # ============================================================
-# ТЕКСТЫ ПОСТОВ (v27: 800-1100 симв.)
+# ТЕКСТЫ ПОСТОВ (v28: заголовок-крючок, 800-1100 симв.)
 # ============================================================
 
-def build_post(book):
+def build_post(book, day):
     t, a, s = book["title"], book["about"], book["series"]
+    style = head_style(day)
     prompt = (f"Напиши пост-анонс о романе Павла Гнесюка «{t}» (серия «{s}»). "
-              f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. 2. Первая строка — заголовок ЗАГЛАВНЫМИ "
-              f"буквами, без ** и ##. 3. Текст СТРОГО 800-1100 символов, 4-6 абзацев, интригующий, живой. "
+              f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. "
+              f"2. Первая строка — ОРИГИНАЛЬНЫЙ цепляющий заголовок-крючок (до 90 символов), "
+              f"приём сегодня: {style}. Заголовок НЕ должен повторять название книги «{t}» "
+              f"и не должен быть скучным; регистр любой — как сильнее цепляет. "
+              f"3. Текст СТРОГО 800-1100 символов, 4-6 абзацев, интригующий, живой. "
               f"4. Раскрой завязку, добавь 2-3 вопроса-крючка и атмосферу. "
               f"5. Закончи сильной строкой-призывом читать дальше.")
     txt = ai_text(prompt, minlen=600, rescue_min=300)
@@ -271,14 +288,17 @@ def build_post(book):
 
 def build_quote_post(book, day):
     fr = book["fragments"][day % len(book["fragments"])]
+    style = head_style(day, 3)
     prompt = (f"Напиши пост: разбор цитаты из романа Павла Гнесюка «{book['title']}». "
-              f"Цитата: «{fr}». Требования: 1. ТОЛЬКО русский язык. 2. Первая строка — заголовок ЗАГЛАВНЫМИ, "
-              f"без ** и ##. 3. 600-900 символов: раскрой смысл цитаты, атмосферу и интригу романа. "
+              f"Цитата: «{fr}». Требования: 1. ТОЛЬКО русский язык. "
+              f"2. Первая строка — ОРИГИНАЛЬНЫЙ цепляющий заголовок-крючок (до 90 символов), "
+              f"приём сегодня: {style}; НЕ повторяй название книги. "
+              f"3. 600-900 символов: раскрой смысл цитаты, атмосферу и интригу романа. "
               f"4. Сама цитата должна войти в текст поста.")
     txt = ai_text(prompt, minlen=500, rescue_min=300)
     if not txt:
         log("⚠️ Разбор цитаты не создан — стандартный пост.")
-        return build_post(book)
+        return build_post(book, day)
     txt = extend_text(txt, 600)
     return clean_txt(txt)
 
@@ -290,7 +310,7 @@ def build_scene(post):
     return ai_text(prompt, minlen=30, rescue_min=30)
 
 # ============================================================
-# КАРТИНКИ v27: замануха 16:9 (gpt-image-1 → HF router → pollinations+обрезка)
+# КАРТИНКИ v28: замануха 16:9 (gpt-image-1 → HF router → pollinations+обрезка)
 # ============================================================
 
 def image_stats(img_bytes):
@@ -371,7 +391,6 @@ def pollinations_image(scene, seed):
         return None
 
 def download_image(scene_text, seed):
-    """v27: промпт-замануха — драматичная обложка, а не пустой пейзаж."""
     clean_img = "".join(c for c in scene_text if c.isalnum() or c.isspace() or c in ".,-")[:220].strip()
     p = ("Eye-catching dramatic thriller book-cover style artwork: "
          "one striking mysterious focal point (artifact, glowing object, door, silhouette of a person "
@@ -441,7 +460,7 @@ def tg_post(img_bytes, caption):
     return False
 
 # ============================================================
-# MAX MESSENGER (v27: диагностика chat_id в логе)
+# MAX MESSENGER (диагностика chat_id в логе)
 # ============================================================
 
 def max_post(img_bytes, text):
@@ -487,7 +506,7 @@ def max_post(img_bytes, text):
     return False
 
 # ============================================================
-# ДЗЕН через RSS (v27: возвращён — Дзен принял ленту)
+# ДЗЕН через RSS
 # ============================================================
 
 def text_to_html(post, img_url, link):
@@ -550,11 +569,12 @@ def main():
     day = datetime.date.today().toordinal()
     book = books[day % len(books)]
     log(f"📚 Книга дня: «{book['title']}» ({book['series']})")
+    log(f"🎯 Приём заголовка сегодня: {head_style(day)}")
 
     if day % 3 == 0 and book.get("fragments"):
         post = build_quote_post(book, day)
     else:
-        post = build_post(book)
+        post = build_post(book, day)
     log(f"✂️ Заголовок поста: {post.split(chr(10))[0][:150]}")
     log(f"📝 Длина поста: {len(post)} симв.")
     link = book.get("url", "")
