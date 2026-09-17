@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import os, json, datetime, requests, time, io, glob, base64, uuid, urllib3
-import html as htmllib
 from PIL import Image
 urllib3.disable_warnings()
 
@@ -19,10 +18,6 @@ TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MAX_TOKEN = os.environ.get("MAX_BOT_TOKEN", "").strip()
 MAX_CHAT = os.environ.get("MAX_CHAT_ID", "").strip()
 
-GH_PAGES = os.environ.get("GH_PAGES", "https://pavrus-ai.github.io/pavel-gnesyuk-dzen").rstrip("/")
-POSTS_FILE = "posts.json"
-RSS_FILE = "rss.xml"
-RSS_TITLE = "Павел Гнесюк — романы и истории"
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
 RU = "\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
@@ -36,7 +31,7 @@ GROQ_MODELS = ["meta-llama/llama-4-scout-17b-16e-instruct",
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v25 (тексты: GigaChat 500-700; картинки: pollinations+обрезка; выходы: TG → MAX → Дзен RSS)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v26 (только TG + MAX; GigaChat 500-700; pollinations+обрезка; без RSS)")
 
 # ============================================================
 # ИИ-ТЕКСТ: ступени с диагностикой
@@ -394,7 +389,7 @@ def convert_to_jpeg(img_bytes):
         return img_bytes
 
 # ============================================================
-# ВЫХОД 1: TELEGRAM
+# TELEGRAM
 # ============================================================
 
 def tg_post(img_bytes, caption):
@@ -419,7 +414,7 @@ def tg_post(img_bytes, caption):
     return False
 
 # ============================================================
-# ВЫХОД 2: MAX MESSENGER
+# MAX MESSENGER
 # ============================================================
 
 def max_post(img_bytes, text):
@@ -457,61 +452,6 @@ def max_post(img_bytes, text):
     return False
 
 # ============================================================
-# ВЫХОД 3: ДЗЕН через RSS (posts.json → rss.xml)
-# ============================================================
-
-def text_to_html(post, img_url, link):
-    parts = [f'<img src="{img_url}" width="100%"/>'] if img_url else []
-    for i, line in enumerate(post.split("\n")):
-        line = line.strip()
-        if not line:
-            continue
-        if i == 0:
-            parts.append(f"<h2>{htmllib.escape(line)}</h2>")
-        else:
-            parts.append(f"<p>{htmllib.escape(line)}</p>")
-    parts.append(f'<p><a href="{link}">Читать книгу на ЛитРес</a></p>')
-    return "".join(parts)
-
-def dzen_update(day, title, post, img_url, link):
-    try:
-        posts = json.load(open(POSTS_FILE, encoding="utf-8"))
-        if not isinstance(posts, list):
-            posts = []
-    except Exception:
-        posts = []
-    guid = f"gnesyuk-dzen-{day}"
-    posts = [p for p in posts if p.get("guid") != guid]
-    pub = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
-    posts.insert(0, {"guid": guid, "title": title, "pubdate": pub,
-                     "img": img_url, "link": link,
-                     "text_html": text_to_html(post, img_url, link)})
-    posts = posts[:20]
-    json.dump(posts, open(POSTS_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-
-    items = []
-    for p in posts:
-        items.append(
-            "<item>"
-            f"<title>{htmllib.escape(p['title'])}</title>"
-            f"<link>{htmllib.escape(p['link'])}</link>"
-            f"<guid isPermaLink=\"false\">{htmllib.escape(p['guid'])}</guid>"
-            f"<pubDate>{p['pubdate']}</pubDate>"
-            f"<content:encoded><![CDATA[{p['text_html']}]]></content:encoded>"
-            "</item>")
-    rss = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-           "<rss version=\"2.0\" xmlns:content=\"http://purl.org/rss/1.0/modules/content/\">\n"
-           "<channel>"
-           f"<title>{htmllib.escape(RSS_TITLE)}</title>"
-           f"<link>{htmllib.escape(GH_PAGES)}</link>"
-           "<description>Новые посты о романах Павла Гнесюка</description>"
-           + "".join(items) +
-           "</channel>\n</rss>\n")
-    with open(RSS_FILE, "w", encoding="utf-8") as f:
-        f.write(rss)
-    log(f"✅ Дзен RSS: обновлён {RSS_FILE} ({len(posts)} записей, свежая: {guid})")
-
-# ============================================================
 # ГЛАВНАЯ ЛОГИКА
 # ============================================================
 
@@ -541,15 +481,13 @@ def main():
             break
         log(f"⏳ Попытка {attempt + 1} не удалась, пробуем снова...")
 
-    img_url = ""
     if img_bytes:
         img_bytes = convert_to_jpeg(img_bytes)
         os.makedirs("img", exist_ok=True)
         path = f"img/dz_{day}.jpg"
         with open(path, "wb") as f:
             f.write(img_bytes)
-        img_url = GH_PAGES + "/" + path
-        log(f"💾 Картинка сохранена: {path} → {img_url}")
+        log(f"💾 Картинка сохранена локально: {path}")
     else:
         candidates = []
         for f in glob.glob("img/dz_*.jpg"):
@@ -563,16 +501,14 @@ def main():
             log(f"⚠️ Генерация не удалась — беру прежнюю картинку {pick}")
             with open(pick, "rb") as f:
                 img_bytes = f.read()
-            img_url = GH_PAGES + "/" + pick
         else:
             log("⚠️ Нет ни свежей, ни подходящей старой картинки")
 
     tg_post(img_bytes, caption)
     max_post(img_bytes, caption)
-    dzen_update(day, post.split("\n")[0], post, img_url, link)
 
     log("=" * 50)
-    log("✅ FINISH: книга → TG + MAX + Дзен(RSS)!")
+    log("✅ FINISH: книга → TG + MAX!")
     log("=" * 50)
 
 if __name__ == "__main__":
