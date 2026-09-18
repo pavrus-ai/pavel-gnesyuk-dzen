@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import os, json, datetime, requests, time, io, glob, base64, uuid, urllib3
-import html as htmllib
 from PIL import Image
 urllib3.disable_warnings()
 
@@ -11,7 +10,6 @@ OR_KEY2 = os.environ.get("OPENROUTER_KEY2", "").strip()
 CEREBRAS_KEY = os.environ.get("CEREBRAS_KEY", "").strip()
 MISTRAL_KEY = os.environ.get("MISTRAL_KEY", "").strip()
 OPENAI_KEY = os.environ.get("OPENAI_KEY", "").strip()
-HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
 GIGACHAT_CLIENT_ID = os.environ.get("GIGACHAT_CLIENT_ID1", "").strip()
 GIGACHAT_CLIENT_SECRET = os.environ.get("GIGACHAT_CLIENT_SECRET1", "").strip()
 TG_BOT = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -19,21 +17,16 @@ TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MAX_TOKEN = os.environ.get("MAX_BOT_TOKEN", "").strip()
 MAX_CHAT = os.environ.get("MAX_CHAT_ID", "").strip()
 
-GH_PAGES = os.environ.get("GH_PAGES", "https://pavrus-ai.github.io/pavel-gnesyuk-dzen").rstrip("/")
-POSTS_FILE = "posts.json"
-RSS_FILE = "rss.xml"
-RSS_TITLE = "Павел Гнесюк — романы и истории"
+MAX_API = "https://platform-api2.max.ru"
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
 RU = "\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
-MIN_BRIGHTNESS = 70
 
 GROQ_MODELS = ["meta-llama/llama-4-scout-17b-16e-instruct",
                "meta-llama/llama-4-maverick-17b-128e-instruct",
                "openai/gpt-oss-120b",
                "llama-3.1-8b-instant"]
 
-# v28: 7 приёмов заголовка — ротация по дням, заголовки всегда разные
 HEAD_STYLES = [
     "острый вопрос к читателю",
     "интрига: намёк на тайну, без раскрытия",
@@ -50,7 +43,7 @@ def head_style(day, shift=0):
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v28 (разные заголовки-крючки: 7 приёмов по дням; текст 800-1100; картинка-замануха 16:9; MAX с диагностикой; RSS для Дзена)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v29 (TG + MAX без RSS; MAX: platform-api2.max.ru + upload-токен; адаптивный фильтр яркости для заманух; заголовки-крючки; текст 800-1100)")
 
 # ============================================================
 # ИИ-ТЕКСТ: ступени с диагностикой
@@ -265,7 +258,7 @@ def trim_text(t, limit):
     return (c[:i+1] if i > limit//2 else c).rstrip()
 
 # ============================================================
-# ТЕКСТЫ ПОСТОВ (v28: заголовок-крючок, 800-1100 симв.)
+# ТЕКСТЫ ПОСТОВ (заголовки-крючки, 800-1100 симв.)
 # ============================================================
 
 def build_post(book, day):
@@ -310,7 +303,7 @@ def build_scene(post):
     return ai_text(prompt, minlen=30, rescue_min=30)
 
 # ============================================================
-# КАРТИНКИ v28: замануха 16:9 (gpt-image-1 → HF router → pollinations+обрезка)
+# КАРТИНКИ v29: замануха 16:9 + адаптивный фильтр яркости
 # ============================================================
 
 def image_stats(img_bytes):
@@ -319,10 +312,22 @@ def image_stats(img_bytes):
         im.verify()
         im = Image.open(io.BytesIO(img_bytes)).convert("L")
         im.thumbnail((64, 64))
-        px = im.tobytes()
-        return True, sum(px) / len(px)
+        px = list(im.tobytes())
+        avg = sum(px) / len(px)
+        bright_ratio = sum(1 for p in px if p > 160) / len(px)
+        return True, avg, bright_ratio
     except Exception:
-        return False, 0.0
+        return False, 0.0, 0.0
+
+def image_ok(img_bytes):
+    """v29: пропускаем светлые ИЛИ драматичные с ярким акцентом (замануха)."""
+    ok, avg, br = image_stats(img_bytes)
+    if not ok:
+        return False
+    good = avg >= 70 or br >= 0.12
+    log(f"🔆 Яркость: средняя {avg:.0f}, ярких пикселей {br:.0%} "
+        f"(пропуск: средняя≥70 ИЛИ акцент≥12%) → {'ПРОПУСК' if good else 'ОТБРАКОВКА'}")
+    return good
 
 def strip_watermark(img_bytes):
     try:
@@ -359,26 +364,6 @@ def openai_image(prompt):
         log(f"⚠️ OpenAI gpt-image-1 ошибка: {e}")
     return None
 
-def hf_image(prompt):
-    if not HF_TOKEN:
-        return None
-    full = prompt + ", photorealistic, high resolution, no text, no logos, no watermark"
-    for mdl in ("black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev"):
-        try:
-            r = requests.post("https://router.huggingface.co/hf-inference/models/" + mdl,
-                headers={"Authorization": f"Bearer {HF_TOKEN}"},
-                json={"inputs": full}, timeout=60)
-            if r.status_code == 410:
-                log(f"⚠️ HF {mdl}: 410 модель устарела — HF пропускаем")
-                return None
-            if r.status_code == 200 and r.headers.get("Content-Type", "").startswith("image/"):
-                log(f"✅ HF {mdl}: картинка {len(r.content)} байт (без водяного знака)")
-                return r.content
-            log(f"⚠️ HF {mdl}: ответ {r.status_code}: {r.text[:80]}")
-        except Exception as e:
-            log(f"⚠️ HF {mdl} ошибка: {str(e)[:80]}")
-    return None
-
 def pollinations_image(scene, seed):
     url = (POLLINATIONS_API + requests.utils.quote(scene) +
            f"?nologo=true&seed={seed}&model=flux&width=1280&height=720")
@@ -394,35 +379,27 @@ def download_image(scene_text, seed):
     clean_img = "".join(c for c in scene_text if c.isalnum() or c.isspace() or c in ".,-")[:220].strip()
     p = ("Eye-catching dramatic thriller book-cover style artwork: "
          "one striking mysterious focal point (artifact, glowing object, door, silhouette of a person "
-         "seen from behind in the distance), cinematic moody lighting with a single bright accent, "
-         "ultra high contrast, rich saturated colors, strong sense of danger and mystery, "
-         "sharp focus on the focal point, composition draws the eye to the center. "
+         "seen from behind in the distance), cinematic moody lighting, "
+         "keep medium-bright overall exposure with ONE strong bright light source (lamp, fire, "
+         "glowing artifact) as the focal accent, ultra high contrast, rich saturated colors, "
+         "strong sense of danger and mystery, sharp focus on the focal point, "
+         "composition draws the eye to the center. "
          "Scene: " + clean_img + ". "
          "No faces close-up, no text, no watermark")
     g = openai_image(p)
+    if g and image_ok(g):
+        return g
     if g:
-        ok, bright = image_stats(g)
-        if ok and bright >= MIN_BRIGHTNESS:
-            return g
-        log(f"⚠️ OpenAI картинка слишком тёмная ({bright:.0f}) — пробую дальше")
-    g = hf_image(p)
-    if g:
-        ok, bright = image_stats(g)
-        if ok and bright >= MIN_BRIGHTNESS:
-            return g
-        log(f"⚠️ HF FLUX картинка слишком тёмная ({bright:.0f}) — пробую дальше")
+        log("⚠️ OpenAI картинка не прошла фильтр — пробую дальше")
     g = pollinations_image(p, seed)
     if g:
-        ok, bright = image_stats(g)
+        ok, avg, br = image_stats(g)
         if not ok:
             log(f"⚠️ Pollinations вернул не картинку (seed={seed})")
             return None
-        log(f"🔆 Яркость картинки: {bright:.0f} (порог {MIN_BRIGHTNESS})")
-        if bright < MIN_BRIGHTNESS:
-            log(f"⚠️ Слишком тёмная картинка (seed={seed}) — отбракована")
-            return None
-        log(f"✅ Картинка-замануха: {len(g)} байт (seed={seed})")
-        return strip_watermark(g)
+        if image_ok(g):
+            log(f"✅ Картинка-замануха: {len(g)} байт (seed={seed})")
+            return strip_watermark(g)
     return None
 
 def convert_to_jpeg(img_bytes):
@@ -460,7 +437,7 @@ def tg_post(img_bytes, caption):
     return False
 
 # ============================================================
-# MAX MESSENGER (диагностика chat_id в логе)
+# MAX MESSENGER v29: platform-api2.max.ru + upload-токен + verify=False
 # ============================================================
 
 def max_post(img_bytes, text):
@@ -471,21 +448,20 @@ def max_post(img_bytes, text):
     att = None
     if img_bytes:
         try:
-            u = requests.get("https://botapi.max.ru/uploads",
-                params={"type": "photo", "access_token": MAX_TOKEN, "chat_id": MAX_CHAT},
-                timeout=30).json()
+            u = requests.post(f"{MAX_API}/uploads",
+                params={"access_token": MAX_TOKEN, "type": "photo", "chat_id": MAX_CHAT},
+                timeout=30, verify=False).json()
             up_url = u.get("url")
-            if up_url:
-                r = requests.post(up_url,
-                    files={"data": ("cover.jpg", img_bytes, "image/jpeg")}, timeout=120).json()
-                fid = r.get("file") or r.get("file_id")
-                if fid:
-                    att = [{"type": "photo", "file_id": fid}]
-                    log("✅ MAX: фото загружено на сервер")
-                else:
-                    log(f"⚠️ MAX upload: нет file_id в ответе: {str(r)[:120]}")
+            up_token = u.get("token")
+            if up_url and up_token:
+                ru = requests.post(up_url,
+                    files={"data": ("cover.jpg", img_bytes, "image/jpeg")},
+                    timeout=120, verify=False)
+                log(f"ℹ️ MAX upload: статус {ru.status_code}")
+                att = [{"type": "photo", "payload": {"token": up_token}}]
+                log("✅ MAX: фото загружено, токен вложения получен")
             else:
-                log(f"⚠️ MAX uploads: нет url в ответе: {str(u)[:120]}")
+                log(f"⚠️ MAX uploads: нет url/token в ответе: {str(u)[:150]}")
         except Exception as e:
             log(f"⚠️ MAX upload: {str(e)[:100]}")
     else:
@@ -494,9 +470,10 @@ def max_post(img_bytes, text):
     if att:
         payload["attachments"] = att
     try:
-        r = requests.post("https://botapi.max.ru/messages",
-            params={"access_token": MAX_TOKEN}, json=payload, timeout=60).json()
-        if r.get("success") or r.get("message"):
+        r = requests.post(f"{MAX_API}/messages",
+            params={"access_token": MAX_TOKEN}, json=payload,
+            timeout=60, verify=False).json()
+        if r.get("success") is True or isinstance(r.get("message"), dict):
             m = r.get("message") or {}
             log(f"✅ MAX: сообщение принято (chat_id в ответе={m.get('chat_id')}, id={m.get('id')})")
             return True
@@ -506,62 +483,7 @@ def max_post(img_bytes, text):
     return False
 
 # ============================================================
-# ДЗЕН через RSS
-# ============================================================
-
-def text_to_html(post, img_url, link):
-    parts = [f'<img src="{img_url}" width="100%"/>'] if img_url else []
-    for i, line in enumerate(post.split("\n")):
-        line = line.strip()
-        if not line:
-            continue
-        if i == 0:
-            parts.append(f"<h2>{htmllib.escape(line)}</h2>")
-        else:
-            parts.append(f"<p>{htmllib.escape(line)}</p>")
-    parts.append(f'<p><a href="{link}">Читать книгу на ЛитРес</a></p>')
-    return "".join(parts)
-
-def dzen_update(day, title, post, img_url, link):
-    try:
-        posts = json.load(open(POSTS_FILE, encoding="utf-8"))
-        if not isinstance(posts, list):
-            posts = []
-    except Exception:
-        posts = []
-    guid = f"gnesyuk-dzen-{day}"
-    posts = [p for p in posts if p.get("guid") != guid]
-    pub = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
-    posts.insert(0, {"guid": guid, "title": title, "pubdate": pub,
-                     "img": img_url, "link": link,
-                     "text_html": text_to_html(post, img_url, link)})
-    posts = posts[:20]
-    json.dump(posts, open(POSTS_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-
-    items = []
-    for p in posts:
-        items.append(
-            "<item>"
-            f"<title>{htmllib.escape(p['title'])}</title>"
-            f"<link>{htmllib.escape(p['link'])}</link>"
-            f"<guid isPermaLink=\"false\">{htmllib.escape(p['guid'])}</guid>"
-            f"<pubDate>{p['pubdate']}</pubDate>"
-            f"<content:encoded><![CDATA[{p['text_html']}]]></content:encoded>"
-            "</item>")
-    rss = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-           "<rss version=\"2.0\" xmlns:content=\"http://purl.org/rss/1.0/modules/content/\">\n"
-           "<channel>"
-           f"<title>{htmllib.escape(RSS_TITLE)}</title>"
-           f"<link>{htmllib.escape(GH_PAGES)}</link>"
-           "<description>Новые посты о романах Павла Гнесюка</description>"
-           + "".join(items) +
-           "</channel>\n</rss>\n")
-    with open(RSS_FILE, "w", encoding="utf-8") as f:
-        f.write(rss)
-    log(f"✅ Дзен RSS: обновлён {RSS_FILE} ({len(posts)} записей, свежая: {guid})")
-
-# ============================================================
-# ГЛАВНАЯ ЛОГИКА
+# ГЛАВНАЯ ЛОГИКА (v29: только TG + MAX, без RSS)
 # ============================================================
 
 def main():
@@ -592,38 +514,32 @@ def main():
             break
         log(f"⏳ Попытка {attempt + 1} не удалась, пробуем снова...")
 
-    img_url = ""
     if img_bytes:
         img_bytes = convert_to_jpeg(img_bytes)
         os.makedirs("img", exist_ok=True)
         path = f"img/dz_{day}.jpg"
         with open(path, "wb") as f:
             f.write(img_bytes)
-        img_url = GH_PAGES + "/" + path
-        log(f"💾 Картинка сохранена: {path} → {img_url}")
+        log(f"💾 Картинка сохранена: {path}")
     else:
         candidates = []
         for f in glob.glob("img/dz_*.jpg"):
             with open(f, "rb") as fh:
-                ok, bright = image_stats(fh.read())
-            if ok and bright >= MIN_BRIGHTNESS:
-                candidates.append((bright, f))
+                if image_ok(fh.read()):
+                    candidates.append(f)
         if candidates:
-            candidates.sort(reverse=True)
-            pick = candidates[0][1]
+            pick = candidates[-1]
             log(f"⚠️ Генерация не удалась — беру прежнюю картинку {pick}")
             with open(pick, "rb") as f:
                 img_bytes = f.read()
-            img_url = GH_PAGES + "/" + pick
         else:
             log("⚠️ Нет ни свежей, ни подходящей старой картинки")
 
     tg_post(img_bytes, caption)
     max_post(img_bytes, caption)
-    dzen_update(day, post.split("\n")[0], post, img_url, link)
 
     log("=" * 50)
-    log("✅ FINISH: книга → TG + MAX + Дзен(RSS)!")
+    log("✅ FINISH: книга → TG + MAX!")
     log("=" * 50)
 
 if __name__ == "__main__":
