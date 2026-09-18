@@ -17,7 +17,7 @@ TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MAX_TOKEN = os.environ.get("MAX_BOT_TOKEN", "").strip()
 MAX_CHAT = os.environ.get("MAX_CHAT_ID", "").strip()
 
-MAX_API = "https://platform-api2.max.ru"
+MAX_APIS = ["https://botapi.max.ru", "https://platform-api2.max.ru"]
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
 RU = "\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
@@ -43,7 +43,7 @@ def head_style(day, shift=0):
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v36 (статья для Дзена 1500-2000 симв.; тизер+картинка → TG и MAX; статья → TG → zen_sync_bot → Дзен; MAX: канал из списка /chats)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v37 (MAX: два домена botapi→platform-api2; СВЕТЛЫЙ промпт заманухи + пороги 65/10%; фолбэк берёт самую светлую старую картинку; статья 1500-2000)")
 
 # ============================================================
 # ИИ-ТЕКСТ: ступени с диагностикой
@@ -302,7 +302,7 @@ def build_scene(post):
     return ai_text(prompt, minlen=30, rescue_min=30)
 
 # ============================================================
-# КАРТИНКИ: замануха 16:9 + авто-осветление + адаптивный фильтр
+# КАРТИНКИ v37: СВЕТЛАЯ замануха 16:9 + авто-осветление до 80 + пороги 65/10%
 # ============================================================
 
 def image_stats(img_bytes):
@@ -322,16 +322,16 @@ def image_ok(img_bytes):
     ok, avg, br = image_stats(img_bytes)
     if not ok:
         return False
-    good = avg >= 70 or br >= 0.12
+    good = avg >= 65 or br >= 0.10
     log(f"🔆 Яркость: средняя {avg:.0f}, ярких пикселей {br:.0%} "
-        f"(пропуск: средняя≥70 ИЛИ акцент≥12%) → {'ПРОПУСК' if good else 'ОТБРАКОВКА'}")
+        f"(пропуск: средняя≥65 ИЛИ акцент≥10%) → {'ПРОПУСК' if good else 'ОТБРАКОВКА'}")
     return good
 
-def brighten(img_bytes, target=75):
+def brighten(img_bytes, target=80):
     ok, avg, br = image_stats(img_bytes)
     if not ok or avg >= target:
         return img_bytes
-    factor = min(1.8, target / max(avg, 1))
+    factor = min(2.2, target / max(avg, 1))
     try:
         im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         im = ImageEnhance.Brightness(im).enhance(factor)
@@ -392,13 +392,11 @@ def pollinations_image(scene, seed):
 
 def download_image(scene_text, seed):
     clean_img = "".join(c for c in scene_text if c.isalnum() or c.isspace() or c in ".,-")[:220].strip()
-    p = ("Eye-catching dramatic thriller book-cover style artwork: "
-         "one striking mysterious focal point (artifact, glowing object, door, silhouette of a person "
-         "seen from behind in the distance), cinematic moody lighting, "
-         "keep medium-bright overall exposure with ONE strong bright light source (lamp, fire, "
-         "glowing artifact) as the focal accent, ultra high contrast, rich saturated colors, "
-         "strong sense of danger and mystery, sharp focus on the focal point, "
-         "composition draws the eye to the center. "
+    p = ("Eye-catching cinematic book-promo artwork, BRIGHT and LUMINOUS: golden-hour sunlight or "
+         "glowing practical light filling the whole scene, vivid saturated colors, high contrast "
+         "accents, one striking mysterious focal point (artifact, glowing object, doorway, silhouette "
+         "of a person seen from behind in the distance), strong sense of danger and mystery, "
+         "sharp focus on the focal point, composition draws the eye to the center. "
          "Scene: " + clean_img + ". "
          "No faces close-up, no text, no watermark")
     g = openai_image(p)
@@ -430,7 +428,7 @@ def convert_to_jpeg(img_bytes):
         return img_bytes
 
 # ============================================================
-# TELEGRAM: тизер с картинкой + статья (для zen_sync_bot → Дзен)
+# TELEGRAM: тизер с картинкой + статья текстом (zen_sync_bot → Дзен)
 # ============================================================
 
 def tg_send_photo(img_bytes, caption):
@@ -462,7 +460,7 @@ def tg_send_article(text):
         r = requests.post(f"https://api.telegram.org/bot{TG_BOT}/sendMessage",
             data={"chat_id": TG_CHAT, "text": text[:4096]}, timeout=60).json()
         if r.get("ok"):
-            log(f"✅ TG: статья ({len(text)} симв.) → {TG_CHAT} → Дзен заберёт через zen_sync_bot")
+            log(f"✅ TG: статья ({len(text)} симв.) ТЕКСТОМ → {TG_CHAT} → Дзен заберёт через zen_sync_bot")
             return True
         log(f"⚠️ TG статья: {str(r)[:200]}")
     except Exception as e:
@@ -470,41 +468,41 @@ def tg_send_article(text):
     return False
 
 # ============================================================
-# MAX v36: канал ИЗ СПИСКА (/chats → /updates → секрет), картинка через upload
+# MAX v37: два домена (botapi как 13.09 → platform-api2), канал из списка
 # ============================================================
 
 def _max_headers():
     return ({"Authorization": f"Bearer {MAX_TOKEN}"}, {"Authorization": MAX_TOKEN})
 
 def _max_call(method, payload=None, params=None):
-    url = f"{MAX_API}/{method}"
-    for hdr in _max_headers():
-        try:
-            r = requests.post(url, headers=hdr, params=params, json=payload,
-                              timeout=60, verify=False)
-            j = r.json()
-            if isinstance(j, dict) and j.get("code") == "verify.token":
+    for base in MAX_APIS:
+        for hdr in _max_headers():
+            try:
+                r = requests.post(base + "/" + method, headers=hdr, params=params,
+                                  json=payload, timeout=60, verify=False)
+                j = r.json()
+                if isinstance(j, dict) and j.get("code") == "verify.token":
+                    continue
+                return j
+            except Exception:
                 continue
-            return j
-        except Exception:
-            continue
     return None
 
 def _max_get(method, params=None):
-    url = f"{MAX_API}/{method}"
-    for hdr in _max_headers():
-        try:
-            r = requests.get(url, headers=hdr, params=params, timeout=30, verify=False)
-            j = r.json()
-            if isinstance(j, dict) and j.get("code") == "verify.token":
+    for base in MAX_APIS:
+        for hdr in _max_headers():
+            try:
+                r = requests.get(base + "/" + method, headers=hdr, params=params,
+                                 timeout=30, verify=False)
+                j = r.json()
+                if isinstance(j, dict) and j.get("code") == "verify.token":
+                    continue
+                return j
+            except Exception:
                 continue
-            return j
-        except Exception:
-            continue
     return None
 
 def max_resolve_chat():
-    """Как 13.09: канал берём ИЗ СПИСКА, а не из секрета."""
     r = _max_get("chats")
     chats = []
     if isinstance(r, dict):
@@ -532,7 +530,6 @@ def max_resolve_chat():
     return None, None
 
 def max_upload(img_bytes, chat_val):
-    """upload → вложенный токен photos{...}.token → вложение image."""
     u = _max_call("uploads", params={"type": "image", "chat_id": chat_val})
     up_url = (u or {}).get("url") if isinstance(u, dict) else None
     if not up_url:
@@ -577,6 +574,8 @@ def max_post(img_bytes, text):
         sec = int(MAX_CHAT) if MAX_CHAT.lstrip("-").isdigit() else MAX_CHAT
         if sec not in variants:
             variants.append(sec)
+        if str(MAX_CHAT) not in variants:
+            variants.append(str(MAX_CHAT))
     att = max_upload(img_bytes, cid) if img_bytes else None
     for chat_val in variants:
         payload = {"chat_id": chat_val, "text": text[:4000]}
@@ -638,11 +637,13 @@ def main():
         candidates = []
         for f in glob.glob("img/dz_*.jpg"):
             with open(f, "rb") as fh:
-                if image_ok(fh.read()):
-                    candidates.append(f)
+                ok, avg, br = image_stats(fh.read())
+            if ok and (avg >= 65 or br >= 0.10):
+                candidates.append((avg, f))
         if candidates:
-            pick = candidates[-1]
-            log(f"⚠️ Генерация не удалась — беру прежнюю картинку {pick}")
+            candidates.sort(reverse=True)
+            pick = candidates[0][1]
+            log(f"⚠️ Генерация не удалась — беру самую светлую прежнюю картинку {pick}")
             with open(pick, "rb") as f:
                 img_bytes = f.read()
         else:
@@ -654,7 +655,7 @@ def main():
 
     log("=" * 50)
     parts = []
-    if tg1: parts.append("TG-тизер")
+    if tg1: parts.append("TG-тизер(с картинкой)")
     if tg2: parts.append("TG-статья→Дзен")
     if max_ok: parts.append("MAX")
     log(f"✅ FINISH: {' + '.join(parts) if parts else 'НИКУДА'}!" + ("" if img_bytes else " (без картинки)"))
