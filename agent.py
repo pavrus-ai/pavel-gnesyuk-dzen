@@ -43,7 +43,7 @@ def head_style(day, shift=0):
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v33 (MAX: токен вложения читается из ответа upload-POST; остальное как v32)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v36 (статья для Дзена 1500-2000 симв.; тизер+картинка → TG и MAX; статья → TG → zen_sync_bot → Дзен; MAX: канал из списка /chats)")
 
 # ============================================================
 # ИИ-ТЕКСТ: ступени с диагностикой
@@ -97,9 +97,9 @@ def ai_gigachat(prompt):
     try:
         r = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"model": "GigaChat:latest", "temperature": 0.9, "max_tokens": 2000,
+            json={"model": "GigaChat:latest", "temperature": 0.9, "max_tokens": 4000,
                   "messages": [{"role": "user", "content": prompt + RU}]},
-            timeout=90, verify=False)
+            timeout=120, verify=False)
         if r.status_code != 200:
             log(f"⚠️ GigaChat chat: статус {r.status_code}: {r.text[:200]}")
             return None
@@ -221,7 +221,7 @@ def ai_text(prompt, minlen=600, rescue_min=300):
             if r: return r
     for i, key in enumerate((OR_KEY, OR_KEY2)):
         if not key: continue
-        for mt in (1000, 512):
+        for mt in (4000, 2000, 1000):
             log(f"🔄 Попытка: openrouter auto (max_tokens={mt}, ключ {i+1})...")
             r = take(ai_openrouter_auto(prompt, key, mt), f"openrouter auto (max={mt}, ключ {i+1})")
             if r: return r
@@ -239,8 +239,8 @@ def extend_text(txt, target):
         return txt
     log(f"✂️ Текст короткий ({len(txt)} < {target}) — прошу GigaChat расширить")
     ext = ai_gigachat(
-        f"Расширь следующий пост до {target}-{target+300} символов, сохранив стиль, структуру, "
-        f"заголовок и смысл. Добавь 2-3 абзаца: детали сюжета, атмосферу, интригу, вопросы к читателю. "
+        f"Расширь следующий текст до {target}-{target+500} символов, сохранив стиль, структуру, "
+        f"заголовок и смысл. Добавь абзацы: детали сюжета, атмосферу, интригу, вопросы к читателю. "
         f"Не добавляй хэштеги и символы ** и #.\n\nТЕКСТ:\n{txt}")
     if ext and len(ext) >= target:
         log(f"✅ Расширено: {len(ext)} симв.")
@@ -258,43 +258,40 @@ def trim_text(t, limit):
     return (c[:i+1] if i > limit//2 else c).rstrip()
 
 # ============================================================
-# ТЕКСТЫ ПОСТОВ (заголовки-крючки, 800-1100 симв.)
+# ТЕКСТЫ: статья (Дзен, 1500-2000) + тизер (TG/MAX) + сцена
 # ============================================================
 
-def build_post(book, day):
+def build_article(book, day):
     t, a, s = book["title"], book["about"], book["series"]
-    style = head_style(day)
-    prompt = (f"Напиши пост-анонс о романе Павла Гнесюка «{t}» (серия «{s}»). "
+    style = head_style(day, 1)
+    prompt = (f"Напиши статью для Дзена о романе Павла Гнесюка «{t}» (серия «{s}»). "
               f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. "
-              f"2. Первая строка — ОРИГИНАЛЬНЫЙ цепляющий заголовок-крючок (до 90 символов), "
-              f"приём сегодня: {style}. Заголовок ОБЯЗАН быть привязан к конкретике этой книги "
-              f"(имена героев, события, места, числа из сюжета), а не быть общей фразой; "
-              f"НЕ повторяй название книги «{t}»; регистр любой — как сильнее цепляет. "
-              f"3. Текст СТРОГО 800-1100 символов, 4-6 абзацев, интригующий, живой. "
-              f"4. Раскрой завязку, добавь 2-3 вопроса-крючка и атмосферу. "
-              f"5. Закончи сильной строкой-призывом читать дальше.")
-    txt = ai_text(prompt, minlen=600, rescue_min=300)
+              f"2. Первая строка — цепляющий заголовок (до 110 символов), приём: {style}; "
+              f"привязан к конкретике книги, НЕ повторяет название «{t}». "
+              f"3. Объём СТРОГО 1500-2000 символов, 4-6 абзацев: завязка, герои, конфликт, "
+              f"атмосфера, 1-2 интригующих вопроса, без пересказа финала. "
+              f"4. Живой литературный язык, без капса и кликбейта-мусора. "
+              f"5. Последняя строка — призыв читать книгу на ЛитРес.")
+    txt = ai_text(prompt, minlen=1000, rescue_min=600)
     if not txt:
-        log("⚠️ Пост не создан — стандартный текст.")
+        log("⚠️ Статья не создана — стандартный текст.")
         txt = f"РОМАН «{t.upper()}»: ИСТОРИЯ, КОТОРАЯ ЗАТЯГИВАЕТ\n\n{a}"
-    txt = extend_text(txt, 800)
+    txt = extend_text(txt, 1500)
     return clean_txt(txt)
 
-def build_quote_post(book, day):
-    fr = book["fragments"][day % len(book["fragments"])]
-    style = head_style(day, 3)
-    prompt = (f"Напиши пост: разбор цитаты из романа Павла Гнесюка «{book['title']}». "
-              f"Цитата: «{fr}». Требования: 1. ТОЛЬКО русский язык. "
+def build_teaser(book, day):
+    t, a, s = book["title"], book["about"], book["series"]
+    style = head_style(day)
+    prompt = (f"Напиши короткий тизер-анонс романа Павла Гнесюка «{t}» (серия «{s}»). "
+              f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. "
               f"2. Первая строка — ОРИГИНАЛЬНЫЙ цепляющий заголовок-крючок (до 90 символов), "
-              f"приём сегодня: {style}; заголовок привязан к смыслу цитаты и событиям книги; "
-              f"НЕ повторяй название книги. "
-              f"3. 600-900 символов: раскрой смысл цитаты, атмосферу и интригу романа. "
-              f"4. Сама цитата должна войти в текст поста.")
-    txt = ai_text(prompt, minlen=500, rescue_min=300)
+              f"приём сегодня: {style}; привязан к конкретике книги; НЕ повторяет название «{t}». "
+              f"3. Текст 500-900 символов, 3-4 абзаца, интригующий, живой. "
+              f"4. Закончи вопросом-крючком.")
+    txt = ai_text(prompt, minlen=300, rescue_min=200)
     if not txt:
-        log("⚠️ Разбор цитаты не создан — стандартный пост.")
-        return build_post(book, day)
-    txt = extend_text(txt, 600)
+        log("⚠️ Тизер не создан — стандартный текст.")
+        txt = f"РОМАН «{t.upper()}»: ИСТОРИЯ, КОТОРАЯ ЗАТЯГИВАЕТ\n\n{a}"
     return clean_txt(txt)
 
 def build_scene(post):
@@ -433,10 +430,10 @@ def convert_to_jpeg(img_bytes):
         return img_bytes
 
 # ============================================================
-# TELEGRAM
+# TELEGRAM: тизер с картинкой + статья (для zen_sync_bot → Дзен)
 # ============================================================
 
-def tg_post(img_bytes, caption):
+def tg_send_photo(img_bytes, caption):
     if not TG_BOT or not TG_CHAT:
         log("ℹ️ TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID не заданы — TG пропущен")
         return False
@@ -450,20 +447,38 @@ def tg_post(img_bytes, caption):
             r = requests.post(f"https://api.telegram.org/bot{TG_BOT}/sendMessage",
                 data={"chat_id": TG_CHAT, "text": caption}, timeout=60).json()
         if r.get("ok"):
-            log(f"✅ TG: карточка отправлена в {TG_CHAT}")
+            log(f"✅ TG: тизер с картинкой отправлен в {TG_CHAT}")
             return True
         log(f"⚠️ TG: {str(r)[:200]}")
     except Exception as e:
         log(f"⚠️ TG ошибка: {e}")
     return False
 
+def tg_send_article(text):
+    if not TG_BOT or not TG_CHAT:
+        log("ℹ️ TG не задан — статья пропущена (Дзен не получит)")
+        return False
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TG_BOT}/sendMessage",
+            data={"chat_id": TG_CHAT, "text": text[:4096]}, timeout=60).json()
+        if r.get("ok"):
+            log(f"✅ TG: статья ({len(text)} симв.) → {TG_CHAT} → Дзен заберёт через zen_sync_bot")
+            return True
+        log(f"⚠️ TG статья: {str(r)[:200]}")
+    except Exception as e:
+        log(f"⚠️ TG статья ошибка: {e}")
+    return False
+
 # ============================================================
-# MAX MESSENGER v33: токен вложения из ответа upload-POST
+# MAX v36: канал ИЗ СПИСКА (/chats → /updates → секрет), картинка через upload
 # ============================================================
+
+def _max_headers():
+    return ({"Authorization": f"Bearer {MAX_TOKEN}"}, {"Authorization": MAX_TOKEN})
 
 def _max_call(method, payload=None, params=None):
     url = f"{MAX_API}/{method}"
-    for hdr in ({"Authorization": f"Bearer {MAX_TOKEN}"}, {"Authorization": MAX_TOKEN}):
+    for hdr in _max_headers():
         try:
             r = requests.post(url, headers=hdr, params=params, json=payload,
                               timeout=60, verify=False)
@@ -475,68 +490,113 @@ def _max_call(method, payload=None, params=None):
             continue
     return None
 
+def _max_get(method, params=None):
+    url = f"{MAX_API}/{method}"
+    for hdr in _max_headers():
+        try:
+            r = requests.get(url, headers=hdr, params=params, timeout=30, verify=False)
+            j = r.json()
+            if isinstance(j, dict) and j.get("code") == "verify.token":
+                continue
+            return j
+        except Exception:
+            continue
+    return None
+
+def max_resolve_chat():
+    """Как 13.09: канал берём ИЗ СПИСКА, а не из секрета."""
+    r = _max_get("chats")
+    chats = []
+    if isinstance(r, dict):
+        chats = r.get("chats") or []
+    elif isinstance(r, list):
+        chats = r
+    for c in chats:
+        if (c.get("type") or c.get("chat_type")) == "channel":
+            cid = c.get("id") or c.get("chat_id")
+            if cid:
+                return cid, c.get("title") or c.get("name") or ""
+    if chats:
+        c = chats[0]
+        cid = c.get("id") or c.get("chat_id")
+        if cid:
+            return cid, c.get("title") or ""
+    u = _max_get("updates")
+    if isinstance(u, dict):
+        for up in u.get("updates") or []:
+            rec = ((up.get("message") or {}).get("recipient")) or {}
+            if rec.get("chat_type") == "channel" and rec.get("chat_id"):
+                return rec["chat_id"], ""
+    if MAX_CHAT:
+        return (int(MAX_CHAT) if MAX_CHAT.lstrip("-").isdigit() else MAX_CHAT), "из секрета"
+    return None, None
+
+def max_upload(img_bytes, chat_val):
+    """upload → вложенный токен photos{...}.token → вложение image."""
+    u = _max_call("uploads", params={"type": "image", "chat_id": chat_val})
+    up_url = (u or {}).get("url") if isinstance(u, dict) else None
+    if not up_url:
+        log(f"⚠️ MAX uploads: нет url: {str(u)[:150]}")
+        return None
+    try:
+        ru = requests.post(up_url, files={"data": ("cover.jpg", img_bytes, "image/jpeg")},
+                           timeout=120, verify=False)
+        rj = {}
+        try:
+            rj = ru.json()
+        except Exception:
+            pass
+        tok = None
+        if isinstance(rj, dict):
+            ph = rj.get("photos") or {}
+            if isinstance(ph, dict):
+                for v in ph.values():
+                    if isinstance(v, dict) and v.get("token"):
+                        tok = v["token"]
+                        break
+            tok = tok or rj.get("token") or rj.get("file")
+        if tok:
+            log("✅ MAX: фото загружено, токен вложения получен")
+            return [{"type": "image", "payload": {"token": tok}}]
+        log(f"⚠️ MAX upload: токен не найден в ответе: {str(rj)[:150]}")
+    except Exception as e:
+        log(f"⚠️ MAX upload: {str(e)[:100]}")
+    return None
+
 def max_post(img_bytes, text):
-    if not MAX_TOKEN or not MAX_CHAT:
-        log("ℹ️ MAX_BOT_TOKEN/MAX_CHAT_ID не заданы — MAX пропущен")
+    if not MAX_TOKEN:
+        log("ℹ️ MAX_BOT_TOKEN не задан — MAX пропущен")
         return False
-    chat_val = int(MAX_CHAT) if MAX_CHAT.lstrip("-").isdigit() else MAX_CHAT
-    log(f"ℹ️ MAX: целевой chat_id из секрета = {chat_val}")
-    att = None
-    if img_bytes:
-        u = _max_call("uploads", params={"type": "image", "chat_id": chat_val})
-        up_url = (u or {}).get("url") if isinstance(u, dict) else None
-        if up_url:
-            try:
-                ru = requests.post(up_url,
-                    files={"data": ("cover.jpg", img_bytes, "image/jpeg")},
-                    timeout=120, verify=False)
-                log(f"ℹ️ MAX upload POST: статус {ru.status_code}, ответ: {ru.text[:200]}")
-                rj = {}
-                try:
-                    rj = ru.json()
-                except Exception:
-                    rj = {}
-                tok = None
-                if isinstance(rj, dict):
-                    tok = (rj.get("token") or rj.get("file") or rj.get("file_id")
-                           or (rj.get("payload") or {}).get("token"))
-                if tok:
-                    att = [{"type": "image", "payload": {"token": tok}}]
-                    log("✅ MAX: фото загружено, токен вложения получен")
-                else:
-                    log("⚠️ MAX upload: токен не найден в ответе — шлю без картинки")
-            except Exception as e:
-                log(f"⚠️ MAX upload: {str(e)[:100]}")
-        else:
-            log(f"⚠️ MAX uploads: нет url в ответе: {str(u)[:200]}")
-    else:
-        log("ℹ️ MAX: картинки нет — шлю только текст")
-
-    def send(payload):
-        return _max_call("messages", payload=payload)
-
-    payload = {"chat_id": chat_val, "text": text[:4000]}
-    if att:
-        payload["attachments"] = att
-    r = send(payload)
-    ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
-    if not ok and att:
-        log("⚠️ MAX: сообщение с вложением не прошло — повторяю только текстом")
-        r = send({"chat_id": chat_val, "text": text[:4000]})
+    cid, title = max_resolve_chat()
+    if not cid:
+        log("⚠️ MAX: не удалось определить канал (список пуст, /updates пуст, секрет пуст)")
+        return False
+    log(f"ℹ️ MAX: канал из списка: {cid} «{title}»")
+    variants = [cid]
+    if MAX_CHAT:
+        sec = int(MAX_CHAT) if MAX_CHAT.lstrip("-").isdigit() else MAX_CHAT
+        if sec not in variants:
+            variants.append(sec)
+    att = max_upload(img_bytes, cid) if img_bytes else None
+    for chat_val in variants:
+        payload = {"chat_id": chat_val, "text": text[:4000]}
+        if att:
+            payload["attachments"] = att
+        r = _max_call("messages", payload=payload)
         ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
-    if ok:
-        m = r.get("message") or {}
-        log(f"✅ MAX: сообщение принято (chat_id в ответе={m.get('chat_id')}, id={m.get('id')})")
-        return True
-    code = (r or {}).get("code") if isinstance(r, dict) else None
-    if code == "proto.payload" and "recipient" in str((r or {}).get("message", "")).lower():
-        log("⚠️ MAX: Unknown recipient — проверьте: 1) MAX_CHAT_ID равен chat.id из /updates; "
-            "2) бот добавлен АДМИНОМ в канал/чат; 3) в ID нет пробелов")
-    log(f"⚠️ MAX: {str(r)[:200]}")
+        if not ok and att:
+            log("⚠️ MAX: сообщение с вложением не прошло — повторяю только текстом")
+            r = _max_call("messages", payload={"chat_id": chat_val, "text": text[:4000]})
+            ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
+        if ok:
+            m = r.get("message") or {}
+            log(f"✅ MAX: пост отправлен (chat_id={chat_val}, id={m.get('id')})")
+            return True
+        log(f"⚠️ MAX: chat_id={chat_val} → {str(r)[:150]}")
     return False
 
 # ============================================================
-# ГЛАВНАЯ ЛОГИКА (честный FINISH)
+# ГЛАВНАЯ ЛОГИКА (схема 13.09)
 # ============================================================
 
 def main():
@@ -546,17 +606,17 @@ def main():
     log(f"📚 Книга дня: «{book['title']}» ({book['series']})")
     log(f"🎯 Приём заголовка сегодня: {head_style(day)}")
 
-    if day % 3 == 0 and book.get("fragments"):
-        post = build_quote_post(book, day)
-    else:
-        post = build_post(book, day)
-    log(f"✂️ Заголовок поста: {post.split(chr(10))[0][:150]}")
-    log(f"📝 Длина поста: {len(post)} симв.")
+    article = build_article(book, day)
+    log(f"📄 Статья: {len(article)} симв. Заголовок: {article.split(chr(10))[0][:120]}")
+    teaser = build_teaser(book, day)
+    log(f"✂️ Тизер: {len(teaser)} симв. Заголовок: {teaser.split(chr(10))[0][:120]}")
+
     link = book.get("url", "")
     link_part = f"\n\n📖 Читайте на ЛитРес: {link}" if link else ""
-    caption = trim_text(post, 1000 - len(link_part) - len(TAGS) - 2) + link_part + "\n\n" + TAGS
+    teaser_caption = trim_text(teaser, 1000 - len(link_part) - len(TAGS) - 2) + link_part + "\n\n" + TAGS
+    article_full = article + link_part
 
-    scene = build_scene(post)
+    scene = build_scene(teaser)
     base_img = scene if scene else book.get("about", "")[:120]
     run_no = int(os.environ.get("GITHUB_RUN_NUMBER", "0"))
     img_bytes = None
@@ -588,12 +648,16 @@ def main():
         else:
             log("⚠️ Нет ни свежей, ни подходящей старой картинки")
 
-    tg_ok = tg_post(img_bytes, caption)
-    max_ok = max_post(img_bytes, caption)
+    tg1 = tg_send_photo(img_bytes, teaser_caption)
+    tg2 = tg_send_article(article_full)
+    max_ok = max_post(img_bytes, teaser_caption)
 
     log("=" * 50)
-    done = " + ".join([n for n, ok in (("TG", tg_ok), ("MAX", max_ok)) if ok]) or "НИКУДА"
-    log(f"✅ FINISH: книга → {done}!" + ("" if img_bytes else " (без картинки)"))
+    parts = []
+    if tg1: parts.append("TG-тизер")
+    if tg2: parts.append("TG-статья→Дзен")
+    if max_ok: parts.append("MAX")
+    log(f"✅ FINISH: {' + '.join(parts) if parts else 'НИКУДА'}!" + ("" if img_bytes else " (без картинки)"))
     log("=" * 50)
 
 if __name__ == "__main__":
