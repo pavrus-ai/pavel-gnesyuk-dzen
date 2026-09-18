@@ -43,7 +43,7 @@ def head_style(day, shift=0):
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v32 (MAX: chat_id числом + type=image + токен в заголовке; заманухи с авто-осветлением; заголовки-крючки; TG + MAX без RSS)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v33 (MAX: токен вложения читается из ответа upload-POST; остальное как v32)")
 
 # ============================================================
 # ИИ-ТЕКСТ: ступени с диагностикой
@@ -458,11 +458,10 @@ def tg_post(img_bytes, caption):
     return False
 
 # ============================================================
-# MAX MESSENGER v32: chat_id числом + type=image + токен в заголовке
+# MAX MESSENGER v33: токен вложения из ответа upload-POST
 # ============================================================
 
 def _max_call(method, payload=None, params=None):
-    """Пробуем Bearer, затем голый токен в заголовке Authorization."""
     url = f"{MAX_API}/{method}"
     for hdr in ({"Authorization": f"Bearer {MAX_TOKEN}"}, {"Authorization": MAX_TOKEN}):
         try:
@@ -485,18 +484,31 @@ def max_post(img_bytes, text):
     att = None
     if img_bytes:
         u = _max_call("uploads", params={"type": "image", "chat_id": chat_val})
-        if isinstance(u, dict) and u.get("url") and u.get("token"):
+        up_url = (u or {}).get("url") if isinstance(u, dict) else None
+        if up_url:
             try:
-                ru = requests.post(u["url"],
+                ru = requests.post(up_url,
                     files={"data": ("cover.jpg", img_bytes, "image/jpeg")},
                     timeout=120, verify=False)
-                log(f"ℹ️ MAX upload: статус {ru.status_code}")
-                att = [{"type": "image", "payload": {"token": u["token"]}}]
-                log("✅ MAX: фото загружено, токен вложения получен")
+                log(f"ℹ️ MAX upload POST: статус {ru.status_code}, ответ: {ru.text[:200]}")
+                rj = {}
+                try:
+                    rj = ru.json()
+                except Exception:
+                    rj = {}
+                tok = None
+                if isinstance(rj, dict):
+                    tok = (rj.get("token") or rj.get("file") or rj.get("file_id")
+                           or (rj.get("payload") or {}).get("token"))
+                if tok:
+                    att = [{"type": "image", "payload": {"token": tok}}]
+                    log("✅ MAX: фото загружено, токен вложения получен")
+                else:
+                    log("⚠️ MAX upload: токен не найден в ответе — шлю без картинки")
             except Exception as e:
                 log(f"⚠️ MAX upload: {str(e)[:100]}")
         else:
-            log(f"⚠️ MAX uploads: нет url/token в ответе: {str(u)[:150]}")
+            log(f"⚠️ MAX uploads: нет url в ответе: {str(u)[:200]}")
     else:
         log("ℹ️ MAX: картинки нет — шлю только текст")
 
