@@ -17,7 +17,8 @@ TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MAX_TOKEN = os.environ.get("MAX_BOT_TOKEN", "").strip()
 MAX_CHAT = os.environ.get("MAX_CHAT_ID", "").strip()
 
-MAX_API = "https://platform-api2.max.ru"
+# v40: три домена — старый, текущий и миграционный
+MAX_APIS = ["https://platform-api.max.ru", "https://platform-api2.max.ru", "https://botapi.max.ru"]
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
 RU = "\n\nВАЖНО: Пиши ТОЛЬКО на русском языке."
@@ -43,10 +44,10 @@ def head_style(day, shift=0):
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v38 (миграция MAX: только platform-api2.max.ru; БЕЗ GET /chats — ID из событий /updates; verify=False вместо сертификата Минцифры; светлая замануха; статья 1500-2000)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v40 (MAX v40: chat_id В params URL (не в payload!); 3 домена; остальное как v39)")
 
 # ============================================================
-# ИИ-ТЕКСТ: ступени с диагностикой
+# ИИ-ТЕКСТ
 # ============================================================
 
 def _extract(r):
@@ -285,7 +286,9 @@ def build_teaser(book, day):
     prompt = (f"Напиши короткий тизер-анонс романа Павла Гнесюка «{t}» (серия «{s}»). "
               f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. "
               f"2. Первая строка — ОРИГИНАЛЬНЫЙ цепляющий заголовок-крючок (до 90 символов), "
-              f"приём сегодня: {style}; привязан к конкретике книги; НЕ повторяет название «{t}». "
+              f"приём сегодня: {style}; привязан к конкретике книги; НЕ повторяет название «{t}»; "
+              f"запрещены служебные слова-заглушки вроде «ТИТР», «ЗАГОЛОВОК», «АНОНС» — "
+              f"только живая осмысленная фраза. "
               f"3. Текст 500-900 символов, 3-4 абзаца, интригующий, живой. "
               f"4. Закончи вопросом-крючком.")
     txt = ai_text(prompt, minlen=300, rescue_min=200)
@@ -468,41 +471,53 @@ def tg_send_article(text):
     return False
 
 # ============================================================
-# MAX v38: миграция — только platform-api2, ID из событий /updates
+# MAX v40: chat_id В params (query string), не в payload!
+# 3 домена: platform-api → platform-api2 → botapi
 # ============================================================
 
 def _max_headers():
     return ({"Authorization": f"Bearer {MAX_TOKEN}"}, {"Authorization": MAX_TOKEN})
 
-def _max_call(method, payload=None, params=None):
-    for hdr in _max_headers():
-        try:
-            r = requests.post(f"{MAX_API}/{method}", headers=hdr, params=params,
-                              json=payload, timeout=60, verify=False)
-            j = r.json()
-            if isinstance(j, dict) and j.get("code") == "verify.token":
+def _max_call(method, params=None, payload=None):
+    """v40: params = query string (там chat_id), payload = тело (там text/attachments)."""
+    for base in MAX_APIS:
+        for hdr in _max_headers():
+            try:
+                r = requests.post(f"{base}/{method}", headers=hdr, params=params,
+                                  json=payload, timeout=60, verify=False)
+                try:
+                    j = r.json()
+                except Exception:
+                    continue
+                if isinstance(j, dict) and j.get("code") == "verify.token":
+                    continue
+                # Логируем домен, на котором сработало
+                log(f"ℹ️ MAX {method} → {base}")
+                return j
+            except Exception:
                 continue
-            return j
-        except Exception:
-            continue
     return None
 
 def _max_get(method, params=None):
-    for hdr in _max_headers():
-        try:
-            r = requests.get(f"{MAX_API}/{method}", headers=hdr, params=params,
-                             timeout=30, verify=False)
-            j = r.json()
-            if isinstance(j, dict) and j.get("code") == "verify.token":
+    for base in MAX_APIS:
+        for hdr in _max_headers():
+            try:
+                r = requests.get(f"{base}/{method}", headers=hdr, params=params,
+                                 timeout=30, verify=False)
+                try:
+                    j = r.json()
+                except Exception:
+                    continue
+                if isinstance(j, dict) and j.get("code") == "verify.token":
+                    continue
+                return j
+            except Exception:
                 continue
-            return j
-        except Exception:
-            continue
     return None
 
-def max_resolve_chat():
-    """Памятка п.4: БЕЗ GET /chats. ID берём из событий подписки в /updates:
-    bot_added/bot_started → затем recipient каналов → затем любой recipient → секрет."""
+def max_collect_ids():
+    ids = []
+    user_ids = []
     u = _max_get("updates")
     if isinstance(u, dict):
         ups = u.get("updates") or []
@@ -511,28 +526,27 @@ def max_resolve_chat():
             t = up.get("update_type") or ""
             if t in ("bot_added", "bot_started", "chat_added", "bot_added_to_chat"):
                 chat = up.get("chat") or ((up.get("message") or {}).get("recipient")) or {}
-                cid = chat.get("chat_id") or chat.get("id")
-                if cid:
+                cid = chat.get("chat_id") or chat.get("id") or up.get("chat_id")
+                if cid and cid not in ids:
+                    ids.insert(0, cid)
                     log(f"ℹ️ MAX: ID из события подписки {t}: {cid}")
-                    return cid, chat.get("title") or ""
-        for up in ups:
             rec = ((up.get("message") or {}).get("recipient")) or {}
-            if rec.get("chat_type") == "channel" and rec.get("chat_id"):
-                log(f"ℹ️ MAX: ID из recipient канала: {rec['chat_id']}")
-                return rec["chat_id"], ""
-        for up in ups:
-            rec = ((up.get("message") or {}).get("recipient")) or {}
-            if rec.get("chat_id"):
-                log(f"ℹ️ MAX: ID из recipient ({rec.get('chat_type')}): {rec['chat_id']}")
-                return rec["chat_id"], ""
-        if ups:
-            log(f"ℹ️ MAX первое событие (для диагностики): {str(ups[0])[:300]}")
-    if MAX_CHAT:
-        log("ℹ️ MAX: беру ID из секрета MAX_CHAT_ID")
-        return (int(MAX_CHAT) if MAX_CHAT.lstrip("-").isdigit() else MAX_CHAT), "из секрета"
-    return None, None
+            cid = rec.get("chat_id")
+            if cid and cid not in ids:
+                ids.append(cid)
+            cid2 = up.get("chat_id")
+            if cid2 and cid2 not in ids:
+                ids.append(cid2)
+                log(f"ℹ️ MAX: ID из события {t} (верхний уровень): {cid2}")
+            uid = up.get("user_id") or ((up.get("message") or {}).get("user_id"))
+            if uid and uid not in user_ids:
+                user_ids.append(uid)
+        if ups and not ids:
+            log(f"ℹ️ MAX первое событие (диагностика): {str(ups[0])[:300]}")
+    return ids, user_ids
 
 def max_upload(img_bytes, chat_val):
+    """v40: upload тоже с chat_id в params, не в теле."""
     u = _max_call("uploads", params={"type": "image", "chat_id": chat_val})
     up_url = (u or {}).get("url") if isinstance(u, dict) else None
     if not up_url:
@@ -567,34 +581,39 @@ def max_post(img_bytes, text):
     if not MAX_TOKEN:
         log("ℹ️ MAX_BOT_TOKEN не задан — MAX пропущен")
         return False
-    cid, title = max_resolve_chat()
-    if not cid:
-        log("⚠️ MAX: не удалось определить канал (события /updates пусты и секрет пуст)")
-        return False
-    log(f"ℹ️ MAX: целевой канал: {cid} «{title}»")
-    variants = [cid]
-    if str(cid) not in variants:
-        variants.append(str(cid))
+    ids, user_ids = max_collect_ids()
+    variants = list(ids)
     if MAX_CHAT:
         sec = int(MAX_CHAT) if MAX_CHAT.lstrip("-").isdigit() else MAX_CHAT
         if sec not in variants:
             variants.append(sec)
-    att = max_upload(img_bytes, cid) if img_bytes else None
+        if str(MAX_CHAT) not in variants:
+            variants.append(str(MAX_CHAT))
+    if not variants:
+        log("⚠️ MAX: ни одного chat_id из событий и секрета")
+        return False
+    log(f"ℹ️ MAX: кандидаты chat_id: {variants}")
+    att = max_upload(img_bytes, variants[0]) if img_bytes else None
     for chat_val in variants:
-        payload = {"chat_id": chat_val, "text": text[:4000]}
+        # v40 КЛЮЧЕВАЯ ПРАВКА: chat_id в params, в payload только text и attachments
+        payload = {"text": text[:4000]}
         if att:
             payload["attachments"] = att
-        r = _max_call("messages", payload=payload)
+        r = _max_call("messages", params={"chat_id": chat_val}, payload=payload)
         ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
-        if not ok and att:
-            log("⚠️ MAX: сообщение с вложением не прошло — повторяю только текстом")
-            r = _max_call("messages", payload={"chat_id": chat_val, "text": text[:4000]})
-            ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
         if ok:
             m = r.get("message") or {}
             log(f"✅ MAX: пост отправлен (chat_id={chat_val}, id={m.get('id')})")
             return True
         log(f"⚠️ MAX: chat_id={chat_val} → {str(r)[:150]}")
+    # Диагностика личкой
+    if user_ids:
+        uid = user_ids[0]
+        log(f"🔬 MAX диагностика: тест в личку user_id={uid} (params URL)")
+        r = _max_call("messages", params={"user_id": uid},
+                      payload={"text": "🔧 Служебная проверка отправки бота (v40)"})
+        ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
+        log(f"🔬 MAX личка: {'УСПЕХ — токен работает, дело в правах на канал' if ok else str(r)[:150]}")
     return False
 
 # ============================================================
