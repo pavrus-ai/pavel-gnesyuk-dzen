@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import os, json, datetime, requests, time, io, glob, base64, uuid, urllib3
+import os, json, datetime, requests, time, io, glob, base64, uuid, urllib3, re
 from PIL import Image, ImageEnhance
 urllib3.disable_warnings()
 
@@ -17,7 +17,6 @@ TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 MAX_TOKEN = os.environ.get("MAX_BOT_TOKEN", "").strip()
 MAX_CHAT = os.environ.get("MAX_CHAT_ID", "").strip()
 
-# v40: три домена — старый, текущий и миграционный
 MAX_APIS = ["https://platform-api.max.ru", "https://platform-api2.max.ru", "https://botapi.max.ru"]
 POLLINATIONS_API = "https://image.pollinations.ai/prompt/"
 TAGS = "#ПавелГнесюк #книги #авторскийблог #писатель"
@@ -38,13 +37,20 @@ HEAD_STYLES = [
     "вызов читателю на «ты»",
 ]
 
+# v42: расширенный список служебных меток GigaChat
+# включает: Заголовок, Заголовок-тизер, Тизер, Статья, Анонс, ТИТР, Title, Headline, Caption
+LABEL_RE = re.compile(
+    r'^(заголовок[-\s]?тизер|заголовок|тизер|статья|анонс|ти?тр|caption|title|headline)\s*[:\-–]?\s*',
+    re.I
+)
+
 def head_style(day, shift=0):
     return HEAD_STYLES[(day + shift) % len(HEAD_STYLES)]
 
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v40 (MAX v40: chat_id В params URL (не в payload!); 3 домена; остальное как v39)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v42 (fix_headline: +метки «ТИТР»/«Caption»; запрет в промпте; остальное как v41)")
 
 # ============================================================
 # ИИ-ТЕКСТ
@@ -252,6 +258,33 @@ def extend_text(txt, target):
 def clean_txt(t):
     return t.replace("**", "").replace("##", "").replace("#", "").strip()
 
+def fix_headline(txt):
+    """v42: чиним первую строку.
+    Срезаем служебные метки: «Заголовок», «Заголовок-тизер», «Тизер», «Статья»,
+    «Анонс», «ТИТР», «Title», «Headline», «Caption».
+    Если метка стоит отдельно — удаляем, заголовком становится следующая строка.
+    Также вычищаем одиночные * - _ из тела.
+    """
+    lines = [l for l in txt.split("\n") if l.strip() not in ("*", "-", "_", "**", "***")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines:
+        first = lines[0].strip()
+        m = LABEL_RE.match(first)
+        if m:
+            rest = first[m.end():].strip()
+            label = first[:m.end()].strip()
+            if rest:
+                lines[0] = rest
+                log(f"🩹 fix_headline: срезана метка «{label}» → заголовок: {rest[:80]}")
+            else:
+                lines.pop(0)
+                while lines and not lines[0].strip():
+                    lines.pop(0)
+                if lines:
+                    log(f"🩹 fix_headline: метка «{label}» удалена, заголовком стала строка: {lines[0].strip()[:80]}")
+    return "\n".join(lines).strip()
+
 def trim_text(t, limit):
     if len(t) <= limit: return t
     c = t[:limit]
@@ -262,13 +295,19 @@ def trim_text(t, limit):
 # ТЕКСТЫ: статья (Дзен, 1500-2000) + тизер (TG/MAX) + сцена
 # ============================================================
 
+# v42: запрет расширен — включает «ТИТР» и «Caption»
+NO_LABEL = ("Первая строка — САМ текст заголовка (живая фраза), БЕЗ слов «Заголовок», "
+            "«Тизер», «Статья», «Анонс», «ТИТР», «Caption» и БЕЗ двоеточия после служебных слов; "
+            "не начинай строку со слов-меток. ")
+
 def build_article(book, day):
     t, a, s = book["title"], book["about"], book["series"]
     style = head_style(day, 1)
     prompt = (f"Напиши статью для Дзена о романе Павла Гнесюка «{t}» (серия «{s}»). "
               f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. "
-              f"2. Первая строка — цепляющий заголовок (до 110 символов), приём: {style}; "
-              f"привязан к конкретике книги, НЕ повторяет название «{t}». "
+              f"2. {NO_LABEL}"
+              f"Заголовок до 110 символов, приём: {style}; привязан к конкретике книги, "
+              f"НЕ повторяет название «{t}»; стиль образца: «\"{t}\" — когда история оживает». "
               f"3. Объём СТРОГО 1500-2000 символов, 4-6 абзацев: завязка, герои, конфликт, "
               f"атмосфера, 1-2 интригующих вопроса, без пересказа финала. "
               f"4. Живой литературный язык, без капса и кликбейта-мусора. "
@@ -278,24 +317,23 @@ def build_article(book, day):
         log("⚠️ Статья не создана — стандартный текст.")
         txt = f"РОМАН «{t.upper()}»: ИСТОРИЯ, КОТОРАЯ ЗАТЯГИВАЕТ\n\n{a}"
     txt = extend_text(txt, 1500)
-    return clean_txt(txt)
+    return fix_headline(clean_txt(txt))
 
 def build_teaser(book, day):
     t, a, s = book["title"], book["about"], book["series"]
     style = head_style(day)
     prompt = (f"Напиши короткий тизер-анонс романа Павла Гнесюка «{t}» (серия «{s}»). "
               f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. "
-              f"2. Первая строка — ОРИГИНАЛЬНЫЙ цепляющий заголовок-крючок (до 90 символов), "
-              f"приём сегодня: {style}; привязан к конкретике книги; НЕ повторяет название «{t}»; "
-              f"запрещены служебные слова-заглушки вроде «ТИТР», «ЗАГОЛОВОК», «АНОНС» — "
-              f"только живая осмысленная фраза. "
+              f"2. {NO_LABEL}"
+              f"Заголовок-крючок до 90 символов, приём сегодня: {style}; привязан к конкретике книги; "
+              f"НЕ повторяет название «{t}». "
               f"3. Текст 500-900 символов, 3-4 абзаца, интригующий, живой. "
               f"4. Закончи вопросом-крючком.")
     txt = ai_text(prompt, minlen=300, rescue_min=200)
     if not txt:
         log("⚠️ Тизер не создан — стандартный текст.")
         txt = f"РОМАН «{t.upper()}»: ИСТОРИЯ, КОТОРАЯ ЗАТЯГИВАЕТ\n\n{a}"
-    return clean_txt(txt)
+    return fix_headline(clean_txt(txt))
 
 def build_scene(post):
     prompt = (f"Из текста ниже выбери ОДНУ самую интригующую сцену и опиши её в 1-2 предложениях "
@@ -471,15 +509,13 @@ def tg_send_article(text):
     return False
 
 # ============================================================
-# MAX v40: chat_id В params (query string), не в payload!
-# 3 домена: platform-api → platform-api2 → botapi
+# MAX v42: chat_id В params URL (рабочая схема v40), 3 домена
 # ============================================================
 
 def _max_headers():
     return ({"Authorization": f"Bearer {MAX_TOKEN}"}, {"Authorization": MAX_TOKEN})
 
 def _max_call(method, params=None, payload=None):
-    """v40: params = query string (там chat_id), payload = тело (там text/attachments)."""
     for base in MAX_APIS:
         for hdr in _max_headers():
             try:
@@ -491,7 +527,6 @@ def _max_call(method, params=None, payload=None):
                     continue
                 if isinstance(j, dict) and j.get("code") == "verify.token":
                     continue
-                # Логируем домен, на котором сработало
                 log(f"ℹ️ MAX {method} → {base}")
                 return j
             except Exception:
@@ -546,7 +581,6 @@ def max_collect_ids():
     return ids, user_ids
 
 def max_upload(img_bytes, chat_val):
-    """v40: upload тоже с chat_id в params, не в теле."""
     u = _max_call("uploads", params={"type": "image", "chat_id": chat_val})
     up_url = (u or {}).get("url") if isinstance(u, dict) else None
     if not up_url:
@@ -595,7 +629,6 @@ def max_post(img_bytes, text):
     log(f"ℹ️ MAX: кандидаты chat_id: {variants}")
     att = max_upload(img_bytes, variants[0]) if img_bytes else None
     for chat_val in variants:
-        # v40 КЛЮЧЕВАЯ ПРАВКА: chat_id в params, в payload только text и attachments
         payload = {"text": text[:4000]}
         if att:
             payload["attachments"] = att
@@ -606,12 +639,11 @@ def max_post(img_bytes, text):
             log(f"✅ MAX: пост отправлен (chat_id={chat_val}, id={m.get('id')})")
             return True
         log(f"⚠️ MAX: chat_id={chat_val} → {str(r)[:150]}")
-    # Диагностика личкой
     if user_ids:
         uid = user_ids[0]
         log(f"🔬 MAX диагностика: тест в личку user_id={uid} (params URL)")
         r = _max_call("messages", params={"user_id": uid},
-                      payload={"text": "🔧 Служебная проверка отправки бота (v40)"})
+                      payload={"text": "🔧 Служебная проверка отправки бота (v42)"})
         ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
         log(f"🔬 MAX личка: {'УСПЕХ — токен работает, дело в правах на канал' if ok else str(r)[:150]}")
     return False
