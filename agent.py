@@ -43,7 +43,7 @@ def head_style(day, shift=0):
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v30 (MAX: токен в заголовке Authorization; авто-осветление заманух; честный FINISH; остальное как v29)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v32 (MAX: chat_id числом + type=image + токен в заголовке; заманухи с авто-осветлением; заголовки-крючки; TG + MAX без RSS)")
 
 # ============================================================
 # ИИ-ТЕКСТ: ступени с диагностикой
@@ -267,8 +267,9 @@ def build_post(book, day):
     prompt = (f"Напиши пост-анонс о романе Павла Гнесюка «{t}» (серия «{s}»). "
               f"Сюжет: {a}. Требования: 1. ТОЛЬКО русский язык. "
               f"2. Первая строка — ОРИГИНАЛЬНЫЙ цепляющий заголовок-крючок (до 90 символов), "
-              f"приём сегодня: {style}. Заголовок НЕ должен повторять название книги «{t}» "
-              f"и не должен быть скучным; регистр любой — как сильнее цепляет. "
+              f"приём сегодня: {style}. Заголовок ОБЯЗАН быть привязан к конкретике этой книги "
+              f"(имена героев, события, места, числа из сюжета), а не быть общей фразой; "
+              f"НЕ повторяй название книги «{t}»; регистр любой — как сильнее цепляет. "
               f"3. Текст СТРОГО 800-1100 символов, 4-6 абзацев, интригующий, живой. "
               f"4. Раскрой завязку, добавь 2-3 вопроса-крючка и атмосферу. "
               f"5. Закончи сильной строкой-призывом читать дальше.")
@@ -285,7 +286,8 @@ def build_quote_post(book, day):
     prompt = (f"Напиши пост: разбор цитаты из романа Павла Гнесюка «{book['title']}». "
               f"Цитата: «{fr}». Требования: 1. ТОЛЬКО русский язык. "
               f"2. Первая строка — ОРИГИНАЛЬНЫЙ цепляющий заголовок-крючок (до 90 символов), "
-              f"приём сегодня: {style}; НЕ повторяй название книги. "
+              f"приём сегодня: {style}; заголовок привязан к смыслу цитаты и событиям книги; "
+              f"НЕ повторяй название книги. "
               f"3. 600-900 символов: раскрой смысл цитаты, атмосферу и интригу романа. "
               f"4. Сама цитата должна войти в текст поста.")
     txt = ai_text(prompt, minlen=500, rescue_min=300)
@@ -303,7 +305,7 @@ def build_scene(post):
     return ai_text(prompt, minlen=30, rescue_min=30)
 
 # ============================================================
-# КАРТИНКИ v30: замануха 16:9 + авто-осветление + адаптивный фильтр
+# КАРТИНКИ: замануха 16:9 + авто-осветление + адаптивный фильтр
 # ============================================================
 
 def image_stats(img_bytes):
@@ -329,7 +331,6 @@ def image_ok(img_bytes):
     return good
 
 def brighten(img_bytes, target=75):
-    """v30: тёмную замануху осветляем до приемлемой, сохраняя драматизм."""
     ok, avg, br = image_stats(img_bytes)
     if not ok or avg >= target:
         return img_bytes
@@ -457,11 +458,11 @@ def tg_post(img_bytes, caption):
     return False
 
 # ============================================================
-# MAX MESSENGER v30: токен в заголовке Authorization (не в URL!)
+# MAX MESSENGER v32: chat_id числом + type=image + токен в заголовке
 # ============================================================
 
 def _max_call(method, payload=None, params=None):
-    """v30: пробуем Bearer, затем сырой токен в заголовке Authorization."""
+    """Пробуем Bearer, затем голый токен в заголовке Authorization."""
     url = f"{MAX_API}/{method}"
     for hdr in ({"Authorization": f"Bearer {MAX_TOKEN}"}, {"Authorization": MAX_TOKEN}):
         try:
@@ -479,17 +480,18 @@ def max_post(img_bytes, text):
     if not MAX_TOKEN or not MAX_CHAT:
         log("ℹ️ MAX_BOT_TOKEN/MAX_CHAT_ID не заданы — MAX пропущен")
         return False
-    log(f"ℹ️ MAX: целевой chat_id из секрета = {MAX_CHAT}")
+    chat_val = int(MAX_CHAT) if MAX_CHAT.lstrip("-").isdigit() else MAX_CHAT
+    log(f"ℹ️ MAX: целевой chat_id из секрета = {chat_val}")
     att = None
     if img_bytes:
-        u = _max_call("uploads", params={"type": "photo", "chat_id": MAX_CHAT})
+        u = _max_call("uploads", params={"type": "image", "chat_id": chat_val})
         if isinstance(u, dict) and u.get("url") and u.get("token"):
             try:
                 ru = requests.post(u["url"],
                     files={"data": ("cover.jpg", img_bytes, "image/jpeg")},
                     timeout=120, verify=False)
                 log(f"ℹ️ MAX upload: статус {ru.status_code}")
-                att = [{"type": "photo", "payload": {"token": u["token"]}}]
+                att = [{"type": "image", "payload": {"token": u["token"]}}]
                 log("✅ MAX: фото загружено, токен вложения получен")
             except Exception as e:
                 log(f"⚠️ MAX upload: {str(e)[:100]}")
@@ -497,19 +499,32 @@ def max_post(img_bytes, text):
             log(f"⚠️ MAX uploads: нет url/token в ответе: {str(u)[:150]}")
     else:
         log("ℹ️ MAX: картинки нет — шлю только текст")
-    payload = {"chat_id": MAX_CHAT, "text": text[:4000]}
+
+    def send(payload):
+        return _max_call("messages", payload=payload)
+
+    payload = {"chat_id": chat_val, "text": text[:4000]}
     if att:
         payload["attachments"] = att
-    r = _max_call("messages", payload=payload)
-    if isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict)):
+    r = send(payload)
+    ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
+    if not ok and att:
+        log("⚠️ MAX: сообщение с вложением не прошло — повторяю только текстом")
+        r = send({"chat_id": chat_val, "text": text[:4000]})
+        ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
+    if ok:
         m = r.get("message") or {}
         log(f"✅ MAX: сообщение принято (chat_id в ответе={m.get('chat_id')}, id={m.get('id')})")
         return True
+    code = (r or {}).get("code") if isinstance(r, dict) else None
+    if code == "proto.payload" and "recipient" in str((r or {}).get("message", "")).lower():
+        log("⚠️ MAX: Unknown recipient — проверьте: 1) MAX_CHAT_ID равен chat.id из /updates; "
+            "2) бот добавлен АДМИНОМ в канал/чат; 3) в ID нет пробелов")
     log(f"⚠️ MAX: {str(r)[:200]}")
     return False
 
 # ============================================================
-# ГЛАВНАЯ ЛОГИКА (v30: честный FINISH)
+# ГЛАВНАЯ ЛОГИКА (честный FINISH)
 # ============================================================
 
 def main():
