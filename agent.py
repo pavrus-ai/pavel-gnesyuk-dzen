@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import os, json, datetime, requests, time, io, glob, base64, uuid, urllib3
-from PIL import Image
+from PIL import Image, ImageEnhance
 urllib3.disable_warnings()
 
 GROQ_KEY = os.environ.get("GROQ_KEY", "").strip()
@@ -43,7 +43,7 @@ def head_style(day, shift=0):
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v29 (TG + MAX без RSS; MAX: platform-api2.max.ru + upload-токен; адаптивный фильтр яркости для заманух; заголовки-крючки; текст 800-1100)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v30 (MAX: токен в заголовке Authorization; авто-осветление заманух; честный FINISH; остальное как v29)")
 
 # ============================================================
 # ИИ-ТЕКСТ: ступени с диагностикой
@@ -303,7 +303,7 @@ def build_scene(post):
     return ai_text(prompt, minlen=30, rescue_min=30)
 
 # ============================================================
-# КАРТИНКИ v29: замануха 16:9 + адаптивный фильтр яркости
+# КАРТИНКИ v30: замануха 16:9 + авто-осветление + адаптивный фильтр
 # ============================================================
 
 def image_stats(img_bytes):
@@ -320,7 +320,6 @@ def image_stats(img_bytes):
         return False, 0.0, 0.0
 
 def image_ok(img_bytes):
-    """v29: пропускаем светлые ИЛИ драматичные с ярким акцентом (замануха)."""
     ok, avg, br = image_stats(img_bytes)
     if not ok:
         return False
@@ -328,6 +327,24 @@ def image_ok(img_bytes):
     log(f"🔆 Яркость: средняя {avg:.0f}, ярких пикселей {br:.0%} "
         f"(пропуск: средняя≥70 ИЛИ акцент≥12%) → {'ПРОПУСК' if good else 'ОТБРАКОВКА'}")
     return good
+
+def brighten(img_bytes, target=75):
+    """v30: тёмную замануху осветляем до приемлемой, сохраняя драматизм."""
+    ok, avg, br = image_stats(img_bytes)
+    if not ok or avg >= target:
+        return img_bytes
+    factor = min(1.8, target / max(avg, 1))
+    try:
+        im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        im = ImageEnhance.Brightness(im).enhance(factor)
+        im = ImageEnhance.Contrast(im).enhance(1.05)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=90)
+        log(f"🌤 Авто-осветление: коэффициент {factor:.2f} (было средняя {avg:.0f})")
+        return buf.getvalue()
+    except Exception as e:
+        log(f"⚠️ brighten: {e}")
+        return img_bytes
 
 def strip_watermark(img_bytes):
     try:
@@ -387,19 +404,22 @@ def download_image(scene_text, seed):
          "Scene: " + clean_img + ". "
          "No faces close-up, no text, no watermark")
     g = openai_image(p)
-    if g and image_ok(g):
-        return g
     if g:
-        log("⚠️ OpenAI картинка не прошла фильтр — пробую дальше")
+        g = brighten(g)
+        if image_ok(g):
+            return g
+        log("⚠️ OpenAI картинка не прошла фильтр даже после осветления — пробую дальше")
     g = pollinations_image(p, seed)
     if g:
         ok, avg, br = image_stats(g)
         if not ok:
             log(f"⚠️ Pollinations вернул не картинку (seed={seed})")
             return None
+        g = brighten(g)
         if image_ok(g):
             log(f"✅ Картинка-замануха: {len(g)} байт (seed={seed})")
             return strip_watermark(g)
+        log(f"⚠️ Картинка не прошла фильтр даже после осветления (seed={seed})")
     return None
 
 def convert_to_jpeg(img_bytes):
@@ -437,8 +457,23 @@ def tg_post(img_bytes, caption):
     return False
 
 # ============================================================
-# MAX MESSENGER v29: platform-api2.max.ru + upload-токен + verify=False
+# MAX MESSENGER v30: токен в заголовке Authorization (не в URL!)
 # ============================================================
+
+def _max_call(method, payload=None, params=None):
+    """v30: пробуем Bearer, затем сырой токен в заголовке Authorization."""
+    url = f"{MAX_API}/{method}"
+    for hdr in ({"Authorization": f"Bearer {MAX_TOKEN}"}, {"Authorization": MAX_TOKEN}):
+        try:
+            r = requests.post(url, headers=hdr, params=params, json=payload,
+                              timeout=60, verify=False)
+            j = r.json()
+            if isinstance(j, dict) and j.get("code") == "verify.token":
+                continue
+            return j
+        except Exception:
+            continue
+    return None
 
 def max_post(img_bytes, text):
     if not MAX_TOKEN or not MAX_CHAT:
@@ -447,43 +482,34 @@ def max_post(img_bytes, text):
     log(f"ℹ️ MAX: целевой chat_id из секрета = {MAX_CHAT}")
     att = None
     if img_bytes:
-        try:
-            u = requests.post(f"{MAX_API}/uploads",
-                params={"access_token": MAX_TOKEN, "type": "photo", "chat_id": MAX_CHAT},
-                timeout=30, verify=False).json()
-            up_url = u.get("url")
-            up_token = u.get("token")
-            if up_url and up_token:
-                ru = requests.post(up_url,
+        u = _max_call("uploads", params={"type": "photo", "chat_id": MAX_CHAT})
+        if isinstance(u, dict) and u.get("url") and u.get("token"):
+            try:
+                ru = requests.post(u["url"],
                     files={"data": ("cover.jpg", img_bytes, "image/jpeg")},
                     timeout=120, verify=False)
                 log(f"ℹ️ MAX upload: статус {ru.status_code}")
-                att = [{"type": "photo", "payload": {"token": up_token}}]
+                att = [{"type": "photo", "payload": {"token": u["token"]}}]
                 log("✅ MAX: фото загружено, токен вложения получен")
-            else:
-                log(f"⚠️ MAX uploads: нет url/token в ответе: {str(u)[:150]}")
-        except Exception as e:
-            log(f"⚠️ MAX upload: {str(e)[:100]}")
+            except Exception as e:
+                log(f"⚠️ MAX upload: {str(e)[:100]}")
+        else:
+            log(f"⚠️ MAX uploads: нет url/token в ответе: {str(u)[:150]}")
     else:
         log("ℹ️ MAX: картинки нет — шлю только текст")
     payload = {"chat_id": MAX_CHAT, "text": text[:4000]}
     if att:
         payload["attachments"] = att
-    try:
-        r = requests.post(f"{MAX_API}/messages",
-            params={"access_token": MAX_TOKEN}, json=payload,
-            timeout=60, verify=False).json()
-        if r.get("success") is True or isinstance(r.get("message"), dict):
-            m = r.get("message") or {}
-            log(f"✅ MAX: сообщение принято (chat_id в ответе={m.get('chat_id')}, id={m.get('id')})")
-            return True
-        log(f"⚠️ MAX: {str(r)[:200]}")
-    except Exception as e:
-        log(f"⚠️ MAX ошибка: {e}")
+    r = _max_call("messages", payload=payload)
+    if isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict)):
+        m = r.get("message") or {}
+        log(f"✅ MAX: сообщение принято (chat_id в ответе={m.get('chat_id')}, id={m.get('id')})")
+        return True
+    log(f"⚠️ MAX: {str(r)[:200]}")
     return False
 
 # ============================================================
-# ГЛАВНАЯ ЛОГИКА (v29: только TG + MAX, без RSS)
+# ГЛАВНАЯ ЛОГИКА (v30: честный FINISH)
 # ============================================================
 
 def main():
@@ -535,11 +561,12 @@ def main():
         else:
             log("⚠️ Нет ни свежей, ни подходящей старой картинки")
 
-    tg_post(img_bytes, caption)
-    max_post(img_bytes, caption)
+    tg_ok = tg_post(img_bytes, caption)
+    max_ok = max_post(img_bytes, caption)
 
     log("=" * 50)
-    log("✅ FINISH: книга → TG + MAX!")
+    done = " + ".join([n for n, ok in (("TG", tg_ok), ("MAX", max_ok)) if ok]) or "НИКУДА"
+    log(f"✅ FINISH: книга → {done}!" + ("" if img_bytes else " (без картинки)"))
     log("=" * 50)
 
 if __name__ == "__main__":
