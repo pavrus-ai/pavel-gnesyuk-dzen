@@ -34,15 +34,14 @@ jobs:
           CEREBRAS_KEY: ${{ secrets.CEREBRAS_KEY }}
           MISTRAL_KEY: ${{ secrets.MISTRAL_KEY }}
           OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           GIGACHAT_CLIENT_ID1: ${{ secrets.GIGACHAT_CLIENT_ID1 }}
           GIGACHAT_CLIENT_SECRET1: ${{ secrets.GIGACHAT_CLIENT_SECRET1 }}
 
-      - name: Commit rss and images
+      - name: Commit images
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add img/ posts.json rss.xml 2>/dev/null || true
-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: dzen rss + images [skip ci]" && git push)
+          git add img/ 2>/dev/null || true
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: dzen images [skip ci]" && git push)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
