@@ -48,7 +48,7 @@ def head_style(day, shift=0):
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v43 (картинки: OpenAI 1024x1024 low = $0.011; pollinations 1024x576; JPEG q85+optimize ~100КБ; остальное как v42)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v44 (OpenAI 1024x1024 low $0.011 + ЛИЦА разрешены; pollinations — силуэты со спины; остальное как v43)")
 
 # ============================================================
 # ИИ-ТЕКСТ
@@ -284,7 +284,7 @@ def trim_text(t, limit):
     return (c[:i+1] if i > limit//2 else c).rstrip()
 
 # ============================================================
-# ТЕКСТЫ: статья (Дзен, 1500-2000) + тизер (TG/MAX) + сцена
+# ТЕКСТЫ: статья (Дзен) + тизер (TG/MAX) + сцена
 # ============================================================
 
 NO_LABEL = ("Первая строка — САМ текст заголовка (живая фраза), БЕЗ слов «Заголовок», "
@@ -327,14 +327,15 @@ def build_teaser(book, day):
     return fix_headline(clean_txt(txt))
 
 def build_scene(post):
-    prompt = (f"Из текста ниже выбери ОДНУ самую интригующую сцену и опиши её в 1-2 предложениях "
-              f"для обложки-заманухи: драматичный момент, загадочный предмет или место, ощущение опасности или тайны. "
-              f"Люди — только силуэтом со спины или издалека, без лиц.\n\n"
+    """v44: сцена может включать героя с эмоцией/лицом (OpenAI); pollinations уйдёт в силуэт."""
+    prompt = (f"Из текста ниже выбери ОДНУ самую интригующую сцену и опиши её в 1-2 предложениях: "
+              f"драматичный момент с героем (допустимы эмоция, пол-оборота, лицо) ИЛИ загадочный "
+              f"предмет/место, ощущение опасности или тайны. Без толп людей.\n\n"
               f"ТЕКСТ: {post[:1500]}")
     return ai_text(prompt, minlen=30, rescue_min=30)
 
 # ============================================================
-# КАРТИНКИ v43: OpenAI 1024x1024 low / pollinations 1024x576 / JPEG q85
+# КАРТИНКИ v44: OpenAI 1024x1024 low + лица; pollinations — силуэты
 # ============================================================
 
 def image_stats(img_bytes):
@@ -391,14 +392,12 @@ def strip_watermark(img_bytes):
         return img_bytes
 
 def openai_image(prompt):
-    """v43: 1024x1024 + quality low = $0.011 за кадр (было 1536x1024 ~$0.07 и 3 МБ)."""
     if not OPENAI_KEY:
         return None
-    full = prompt + ", photorealistic, high resolution, no text, no logos, no watermark"
     try:
         r = requests.post("https://api.openai.com/v1/images/generations",
             headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
-            json={"model": "gpt-image-1", "prompt": full, "n": 1,
+            json={"model": "gpt-image-1", "prompt": prompt, "n": 1,
                   "size": "1024x1024", "quality": "low"},
             timeout=180).json()
         if "error" not in r:
@@ -425,21 +424,24 @@ def pollinations_image(scene, seed):
         return None
 
 def download_image(scene_text, seed):
+    """v44: OpenAI — люди и лица разрешены; pollinations — только силуэты со спины."""
     clean_img = "".join(c for c in scene_text if c.isalnum() or c.isspace() or c in ".,-")[:220].strip()
-    p = ("Eye-catching cinematic book-promo artwork, BRIGHT and LUMINOUS: golden-hour sunlight or "
-         "glowing practical light filling the whole scene, vivid saturated colors, high contrast "
-         "accents, one striking mysterious focal point (artifact, glowing object, doorway, silhouette "
-         "of a person seen from behind in the distance), strong sense of danger and mystery, "
-         "sharp focus on the focal point, composition draws the eye to the center. "
-         "Scene: " + clean_img + ". "
-         "No faces close-up, no text, no watermark")
-    g = openai_image(p)
+    base = ("Eye-catching cinematic book-promo artwork, BRIGHT and LUMINOUS: golden-hour sunlight or "
+            "glowing practical light filling the whole scene, vivid saturated colors, high contrast "
+            "accents, one striking focal point, strong sense of danger and mystery, sharp focus, "
+            "composition draws the eye to the center. Scene: " + clean_img + ". ")
+    p_openai = base + ("People and FACES allowed: expressive half-turns and close-ups welcome, "
+                       "anatomically perfect faces, coherent eyes and hands, natural skin texture, "
+                       "cinematic portrait lighting. No text, no logos, no watermark")
+    p_poll = base + ("People ONLY as distant silhouettes seen from behind, no faces, no close-ups. "
+                     "No text, no logos, no watermark")
+    g = openai_image(p_openai)
     if g:
         g = brighten(g)
         if image_ok(g):
             return g
         log("⚠️ OpenAI картинка не прошла фильтр даже после осветления — пробую дальше")
-    g = pollinations_image(p, seed)
+    g = pollinations_image(p_poll, seed)
     if g:
         ok, avg, br = image_stats(g)
         if not ok:
@@ -453,7 +455,6 @@ def download_image(scene_text, seed):
     return None
 
 def convert_to_jpeg(img_bytes):
-    """v43: максимум 1024px по стороне, quality 85 + optimize → файл ~100 КБ вместо 3 МБ."""
     try:
         im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         im.thumbnail((1024, 1024))
@@ -466,7 +467,7 @@ def convert_to_jpeg(img_bytes):
         return img_bytes
 
 # ============================================================
-# TELEGRAM: тизер с картинкой + статья текстом (zen_sync_bot → Дзен)
+# TELEGRAM
 # ============================================================
 
 def tg_send_photo(img_bytes, caption):
@@ -506,7 +507,7 @@ def tg_send_article(text):
     return False
 
 # ============================================================
-# MAX: chat_id В params URL (рабочая схема v40), 3 домена
+# MAX: chat_id в params URL, 3 домена
 # ============================================================
 
 def _max_headers():
@@ -640,7 +641,7 @@ def max_post(img_bytes, text):
         uid = user_ids[0]
         log(f"🔬 MAX диагностика: тест в личку user_id={uid} (params URL)")
         r = _max_call("messages", params={"user_id": uid},
-                      payload={"text": "🔧 Служебная проверка отправки бота (v43)"})
+                      payload={"text": "🔧 Служебная проверка отправки бота (v44)"})
         ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
         log(f"🔬 MAX личка: {'УСПЕХ — токен работает, дело в правах на канал' if ok else str(r)[:150]}")
     return False
