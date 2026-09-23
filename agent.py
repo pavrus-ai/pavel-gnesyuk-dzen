@@ -37,8 +37,6 @@ HEAD_STYLES = [
     "вызов читателю на «ты»",
 ]
 
-# v42: расширенный список служебных меток GigaChat
-# включает: Заголовок, Заголовок-тизер, Тизер, Статья, Анонс, ТИТР, Title, Headline, Caption
 LABEL_RE = re.compile(
     r'^(заголовок[-\s]?тизер|заголовок|тизер|статья|анонс|ти?тр|caption|title|headline)\s*[:\-–]?\s*',
     re.I
@@ -50,7 +48,7 @@ def head_style(day, shift=0):
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v42 (fix_headline: +метки «ТИТР»/«Caption»; запрет в промпте; остальное как v41)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v43 (картинки: OpenAI 1024x1024 low = $0.011; pollinations 1024x576; JPEG q85+optimize ~100КБ; остальное как v42)")
 
 # ============================================================
 # ИИ-ТЕКСТ
@@ -259,12 +257,6 @@ def clean_txt(t):
     return t.replace("**", "").replace("##", "").replace("#", "").strip()
 
 def fix_headline(txt):
-    """v42: чиним первую строку.
-    Срезаем служебные метки: «Заголовок», «Заголовок-тизер», «Тизер», «Статья»,
-    «Анонс», «ТИТР», «Title», «Headline», «Caption».
-    Если метка стоит отдельно — удаляем, заголовком становится следующая строка.
-    Также вычищаем одиночные * - _ из тела.
-    """
     lines = [l for l in txt.split("\n") if l.strip() not in ("*", "-", "_", "**", "***")]
     while lines and not lines[0].strip():
         lines.pop(0)
@@ -295,7 +287,6 @@ def trim_text(t, limit):
 # ТЕКСТЫ: статья (Дзен, 1500-2000) + тизер (TG/MAX) + сцена
 # ============================================================
 
-# v42: запрет расширен — включает «ТИТР» и «Caption»
 NO_LABEL = ("Первая строка — САМ текст заголовка (живая фраза), БЕЗ слов «Заголовок», "
             "«Тизер», «Статья», «Анонс», «ТИТР», «Caption» и БЕЗ двоеточия после служебных слов; "
             "не начинай строку со слов-меток. ")
@@ -343,7 +334,7 @@ def build_scene(post):
     return ai_text(prompt, minlen=30, rescue_min=30)
 
 # ============================================================
-# КАРТИНКИ: СВЕТЛАЯ замануха 16:9 + авто-осветление + пороги 65/10%
+# КАРТИНКИ v43: OpenAI 1024x1024 low / pollinations 1024x576 / JPEG q85
 # ============================================================
 
 def image_stats(img_bytes):
@@ -400,19 +391,21 @@ def strip_watermark(img_bytes):
         return img_bytes
 
 def openai_image(prompt):
+    """v43: 1024x1024 + quality low = $0.011 за кадр (было 1536x1024 ~$0.07 и 3 МБ)."""
     if not OPENAI_KEY:
         return None
     full = prompt + ", photorealistic, high resolution, no text, no logos, no watermark"
     try:
         r = requests.post("https://api.openai.com/v1/images/generations",
             headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
-            json={"model": "gpt-image-1", "prompt": full, "n": 1, "size": "1536x1024"},
+            json={"model": "gpt-image-1", "prompt": full, "n": 1,
+                  "size": "1024x1024", "quality": "low"},
             timeout=180).json()
         if "error" not in r:
             b64 = (r.get("data") or [{}])[0].get("b64_json")
             if b64:
                 data = base64.b64decode(b64)
-                log(f"✅ OpenAI gpt-image-1: картинка {len(data)} байт (без водяного знака)")
+                log(f"✅ OpenAI gpt-image-1 (1024x1024 low, $0.011): картинка {len(data)} байт (без водяного знака)")
                 return data
         else:
             log(f"⚠️ OpenAI gpt-image-1: {str(r['error'])[:120]}")
@@ -422,7 +415,7 @@ def openai_image(prompt):
 
 def pollinations_image(scene, seed):
     url = (POLLINATIONS_API + requests.utils.quote(scene) +
-           f"?nologo=true&seed={seed}&model=flux&width=1280&height=720")
+           f"?nologo=true&seed={seed}&model=flux&width=1024&height=576")
     try:
         r = requests.get(url, timeout=240)
         r.raise_for_status()
@@ -460,11 +453,15 @@ def download_image(scene_text, seed):
     return None
 
 def convert_to_jpeg(img_bytes):
+    """v43: максимум 1024px по стороне, quality 85 + optimize → файл ~100 КБ вместо 3 МБ."""
     try:
         im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        im.thumbnail((1024, 1024))
         buf = io.BytesIO()
-        im.save(buf, "JPEG", quality=92)
-        return buf.getvalue()
+        im.save(buf, "JPEG", quality=85, optimize=True)
+        data = buf.getvalue()
+        log(f"🖼 Финал: {im.size[0]}x{im.size[1]}, {len(data)} байт")
+        return data
     except Exception:
         return img_bytes
 
@@ -509,7 +506,7 @@ def tg_send_article(text):
     return False
 
 # ============================================================
-# MAX v42: chat_id В params URL (рабочая схема v40), 3 домена
+# MAX: chat_id В params URL (рабочая схема v40), 3 домена
 # ============================================================
 
 def _max_headers():
@@ -643,13 +640,13 @@ def max_post(img_bytes, text):
         uid = user_ids[0]
         log(f"🔬 MAX диагностика: тест в личку user_id={uid} (params URL)")
         r = _max_call("messages", params={"user_id": uid},
-                      payload={"text": "🔧 Служебная проверка отправки бота (v42)"})
+                      payload={"text": "🔧 Служебная проверка отправки бота (v43)"})
         ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
         log(f"🔬 MAX личка: {'УСПЕХ — токен работает, дело в правах на канал' if ok else str(r)[:150]}")
     return False
 
 # ============================================================
-# ГЛАВНАЯ ЛОГИКА (схема 13.09)
+# ГЛАВНАЯ ЛОГИКА
 # ============================================================
 
 def main():
