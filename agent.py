@@ -48,7 +48,7 @@ def head_style(day, shift=0):
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v44 (OpenAI 1024x1024 low $0.011 + ЛИЦА разрешены; pollinations — силуэты со спины; остальное как v43)")
+log("Версия ️ pavel-gnesyuk-dzen v45 (OpenAI 1024x1024 low + лица; pollinations — силуэты; «Книгу можно купить на ЛитРес»; запрет дублирования заголовка в теле статьи)")
 
 # ============================================================
 # ИИ-ТЕКСТ
@@ -81,7 +81,7 @@ def get_gigachat_token():
                      "Content-Type": "application/x-www-form-urlencoded"},
             data={"scope": "GIGACHAT_API_PERS"},
             timeout=30, verify=False)
-        log(f"ℹ️ GigaChat OAuth: статус {r.status_code}")
+        log(f"️ GigaChat OAuth: статус {r.status_code}")
         if r.status_code != 200:
             log(f"⚠️ GigaChat OAuth тело: {r.text[:300]}")
             return None
@@ -182,7 +182,7 @@ def ai_pollinations_text(prompt):
         if res:
             return res
     except Exception as e:
-        log(f"   ⚠️ pollinations-text: {str(e)[:80]}")
+        log(f"   ️ pollinations-text: {str(e)[:80]}")
     return None
 
 def ai_text(prompt, minlen=600, rescue_min=300):
@@ -207,7 +207,7 @@ def ai_text(prompt, minlen=600, rescue_min=300):
         r = take(ai_gigachat(prompt), "gigachat")
         if r: return r
     if not CEREBRAS_KEY:
-        log("⚠️ cerebras: CEREBRAS_KEY не передан в env!")
+        log("️ cerebras: CEREBRAS_KEY не передан в env!")
     else:
         log("🔄 Попытка: cerebras (llama-3.3-70b)...")
         r = take(ai_cerebras(prompt), "cerebras")
@@ -274,7 +274,7 @@ def fix_headline(txt):
                 while lines and not lines[0].strip():
                     lines.pop(0)
                 if lines:
-                    log(f"🩹 fix_headline: метка «{label}» удалена, заголовком стала строка: {lines[0].strip()[:80]}")
+                    log(f" fix_headline: метка «{label}» удалена, заголовком стала строка: {lines[0].strip()[:80]}")
     return "\n".join(lines).strip()
 
 def trim_text(t, limit):
@@ -302,7 +302,9 @@ def build_article(book, day):
               f"3. Объём СТРОГО 1500-2000 символов, 4-6 абзацев: завязка, герои, конфликт, "
               f"атмосфера, 1-2 интригующих вопроса, без пересказа финала. "
               f"4. Живой литературный язык, без капса и кликбейта-мусора. "
-              f"5. Последняя строка — призыв читать книгу на ЛитРес.")
+              f"5. ПЕРВАЯ СТРОКА ТЕКСТА НЕ ДОЛЖНА ПОВТОРЯТЬ ЗАГОЛОВОК — начинай сразу с сюжета, "
+              f"атмосферы или вопроса, а не с пересказа заголовка. "
+              f"6. Последняя строка — «Книгу можно купить на ЛитРес» + ссылка.")
     txt = ai_text(prompt, minlen=1000, rescue_min=600)
     if not txt:
         log("⚠️ Статья не создана — стандартный текст.")
@@ -327,7 +329,7 @@ def build_teaser(book, day):
     return fix_headline(clean_txt(txt))
 
 def build_scene(post):
-    """v44: сцена может включать героя с эмоцией/лицом (OpenAI); pollinations уйдёт в силуэт."""
+    """v45: сцена может включать героя с эмоцией/лицом (OpenAI); pollinations уйдёт в силуэт."""
     prompt = (f"Из текста ниже выбери ОДНУ самую интригующую сцену и опиши её в 1-2 предложениях: "
               f"драматичный момент с героем (допустимы эмоция, пол-оборота, лицо) ИЛИ загадочный "
               f"предмет/место, ощущение опасности или тайны. Без толп людей.\n\n"
@@ -335,7 +337,7 @@ def build_scene(post):
     return ai_text(prompt, minlen=30, rescue_min=30)
 
 # ============================================================
-# КАРТИНКИ v44: OpenAI 1024x1024 low + лица; pollinations — силуэты
+# КАРТИНКИ v45: OpenAI 1024x1024 low + лица; pollinations — силуэты
 # ============================================================
 
 def image_stats(img_bytes):
@@ -424,7 +426,7 @@ def pollinations_image(scene, seed):
         return None
 
 def download_image(scene_text, seed):
-    """v44: OpenAI — люди и лица разрешены; pollinations — только силуэты со спины."""
+    """v45: OpenAI — люди и лица разрешены; pollinations — только силуэты со спины."""
     clean_img = "".join(c for c in scene_text if c.isalnum() or c.isspace() or c in ".,-")[:220].strip()
     base = ("Eye-catching cinematic book-promo artwork, BRIGHT and LUMINOUS: golden-hour sunlight or "
             "glowing practical light filling the whole scene, vivid saturated colors, high contrast "
@@ -440,12 +442,12 @@ def download_image(scene_text, seed):
         g = brighten(g)
         if image_ok(g):
             return g
-        log("⚠️ OpenAI картинка не прошла фильтр даже после осветления — пробую дальше")
+        log("️ OpenAI картинка не прошла фильтр даже после осветления — пробую дальше")
     g = pollinations_image(p_poll, seed)
     if g:
         ok, avg, br = image_stats(g)
         if not ok:
-            log(f"⚠️ Pollinations вернул не картинку (seed={seed})")
+            log(f"️ Pollinations вернул не картинку (seed={seed})")
             return None
         g = brighten(g)
         if image_ok(g):
@@ -582,7 +584,7 @@ def max_upload(img_bytes, chat_val):
     u = _max_call("uploads", params={"type": "image", "chat_id": chat_val})
     up_url = (u or {}).get("url") if isinstance(u, dict) else None
     if not up_url:
-        log(f"⚠️ MAX uploads: нет url: {str(u)[:150]}")
+        log(f"️ MAX uploads: нет url: {str(u)[:150]}")
         return None
     try:
         ru = requests.post(up_url, files={"data": ("cover.jpg", img_bytes, "image/jpeg")},
@@ -624,7 +626,7 @@ def max_post(img_bytes, text):
     if not variants:
         log("⚠️ MAX: ни одного chat_id из событий и секрета")
         return False
-    log(f"ℹ️ MAX: кандидаты chat_id: {variants}")
+    log(f"️ MAX: кандидаты chat_id: {variants}")
     att = max_upload(img_bytes, variants[0]) if img_bytes else None
     for chat_val in variants:
         payload = {"text": text[:4000]}
@@ -636,12 +638,12 @@ def max_post(img_bytes, text):
             m = r.get("message") or {}
             log(f"✅ MAX: пост отправлен (chat_id={chat_val}, id={m.get('id')})")
             return True
-        log(f"⚠️ MAX: chat_id={chat_val} → {str(r)[:150]}")
+        log(f"️ MAX: chat_id={chat_val} → {str(r)[:150]}")
     if user_ids:
         uid = user_ids[0]
         log(f"🔬 MAX диагностика: тест в личку user_id={uid} (params URL)")
         r = _max_call("messages", params={"user_id": uid},
-                      payload={"text": "🔧 Служебная проверка отправки бота (v44)"})
+                      payload={"text": " Служебная проверка отправки бота (v45)"})
         ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
         log(f"🔬 MAX личка: {'УСПЕХ — токен работает, дело в правах на канал' if ok else str(r)[:150]}")
     return False
@@ -660,10 +662,10 @@ def main():
     article = build_article(book, day)
     log(f"📄 Статья: {len(article)} симв. Заголовок: {article.split(chr(10))[0][:120]}")
     teaser = build_teaser(book, day)
-    log(f"✂️ Тизер: {len(teaser)} симв. Заголовок: {teaser.split(chr(10))[0][:120]}")
+    log(f"️ Тизер: {len(teaser)} симв. Заголовок: {teaser.split(chr(10))[0][:120]}")
 
     link = book.get("url", "")
-    link_part = f"\n\n📖 Читайте на ЛитРес: {link}" if link else ""
+    link_part = f"\n\n Книгу можно купить на ЛитРес: {link}" if link else ""
     teaser_caption = trim_text(teaser, 1000 - len(link_part) - len(TAGS) - 2) + link_part + "\n\n" + TAGS
     article_full = article + link_part
 
@@ -676,7 +678,7 @@ def main():
         img_bytes = download_image(base_img, seed)
         if img_bytes:
             break
-        log(f"⏳ Попытка {attempt + 1} не удалась, пробуем снова...")
+        log(f" Попытка {attempt + 1} не удалась, пробуем снова...")
 
     if img_bytes:
         img_bytes = convert_to_jpeg(img_bytes)
@@ -695,7 +697,7 @@ def main():
         if candidates:
             candidates.sort(reverse=True)
             pick = candidates[0][1]
-            log(f"⚠️ Генерация не удалась — беру самую светлую прежнюю картинку {pick}")
+            log(f"️ Генерация не удалась — беру самую светлую прежнюю картинку {pick}")
             with open(pick, "rb") as f:
                 img_bytes = f.read()
         else:
@@ -717,5 +719,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        log(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        log(f" КРИТИЧЕСКАЯ ОШИБКА: {e}")
         raise
