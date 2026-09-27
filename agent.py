@@ -48,7 +48,7 @@ def head_style(day, shift=0):
 def log(msg):
     print(msg, flush=True)
 
-log("Версия ℹ️ pavel-gnesyuk-dzen v46 (OpenAI 1024x1024 low + лица; pollinations — силуэты; запрет дублей ЛитРес; одна финальная строка «Купить книгу можно на ЛитРес: ссылка»)")
+log("Версия ℹ️ pavel-gnesyuk-dzen v47 (OpenAI 1024x1024 low + лица; pollinations — силуэты; чистка Markdown-скобок <url>; удаление дублей ЛитРес из текста модели; удаление дубля заголовка в первой строке)")
 
 # ============================================================
 # ИИ-ТЕКСТ
@@ -125,7 +125,7 @@ def ai_cerebras(prompt):
             return None
         return _extract(r)
     except Exception as e:
-        log(f"   ⚠️ cerebras: сеть/ошибка {str(e)[:80]}")
+        log(f"   ️ cerebras: сеть/ошибка {str(e)[:80]}")
         return None
 
 def ai_mistral(prompt):
@@ -136,7 +136,7 @@ def ai_mistral(prompt):
             json={"model": "mistral-small-latest", "temperature": 0.8,
                   "messages": [{"role": "user", "content": prompt + RU}]}, timeout=60).json()
         if "error" in r:
-            log(f"   ⚠️ mistral: {_err_snippet(r)}")
+            log(f"   ️ mistral: {_err_snippet(r)}")
             return None
         return _extract(r)
     except Exception as e:
@@ -166,7 +166,7 @@ def ai_openrouter_auto(prompt, key, max_tokens):
             json={"model": "auto", "temperature": 0.8, "max_tokens": max_tokens,
                   "messages": [{"role": "user", "content": prompt + RU}]}, timeout=60).json()
         if "error" in r:
-            log(f"   ️ openrouter auto (max={max_tokens}): {_err_snippet(r)}")
+            log(f"   ⚠️ openrouter auto (max={max_tokens}): {_err_snippet(r)}")
             return None
         return _extract(r)
     except Exception as e:
@@ -207,7 +207,7 @@ def ai_text(prompt, minlen=600, rescue_min=300):
         r = take(ai_gigachat(prompt), "gigachat")
         if r: return r
     if not CEREBRAS_KEY:
-        log("️ cerebras: CEREBRAS_KEY не передан в env!")
+        log("⚠️ cerebras: CEREBRAS_KEY не передан в env!")
     else:
         log("🔄 Попытка: cerebras (llama-3.3-70b)...")
         r = take(ai_cerebras(prompt), "cerebras")
@@ -250,7 +250,7 @@ def extend_text(txt, target):
     if ext and len(ext) >= target:
         log(f"✅ Расширено: {len(ext)} симв.")
         return ext
-    log("⚠️ Расширение не удалось — оставляю как есть")
+    log("️ Расширение не удалось — оставляю как есть")
     return txt
 
 def clean_txt(t):
@@ -268,7 +268,7 @@ def fix_headline(txt):
             label = first[:m.end()].strip()
             if rest:
                 lines[0] = rest
-                log(f"🩹 fix_headline: срезана метка «{label}» → заголовок: {rest[:80]}")
+                log(f" fix_headline: срезана метка «{label}» → заголовок: {rest[:80]}")
             else:
                 lines.pop(0)
                 while lines and not lines[0].strip():
@@ -282,6 +282,63 @@ def trim_text(t, limit):
     c = t[:limit]
     i = max(c.rfind("."), c.rfind("!"), c.rfind("?"), c.rfind("\n"))
     return (c[:i+1] if i > limit//2 else c).rstrip()
+
+# ============================================================
+# v47: ПОСТ-ОБРАБОТКА — чистка артефактов модели
+# ============================================================
+
+def clean_model_artifacts(txt):
+    """v47: убирает Markdown-скобки <url>, Markdown-ссылки [text](url), лишние звёздочки."""
+    # Убираем < > вокруг URL: <https://...> → https://...
+    txt = re.sub(r'<(https?://[^>\s]+)>', r'\1', txt)
+    # Убираем Markdown-ссылки [текст](url) → оставляем только url
+    txt = re.sub(r'\[[^\]]*\]\((https?://[^)]+)\)', r'\1', txt)
+    # Убираем оставшиеся ** и __
+    txt = txt.replace("**", "").replace("__", "")
+    return txt
+
+def remove_litres_mentions(txt):
+    """v47: удаляет любые упоминания ЛитРес и URL litres.ru из текста модели.
+    Финальная ссылка добавится автоматически в main()."""
+    lines = txt.split("\n")
+    cleaned = []
+    removed_count = 0
+    for line in lines:
+        low = line.lower()
+        # Пропускаем строки, где есть упоминание ЛитРес или litres.ru
+        if "литрес" in low or "litres.ru" in low or "лит-рес" in low:
+            log(f"🧹 Удалена самодеятельная ссылка модели: {line.strip()[:100]}")
+            removed_count += 1
+            continue
+        cleaned.append(line)
+    if removed_count:
+        log(f"🧹 Удалено строк с упоминанием ЛитРес: {removed_count}")
+    return "\n".join(cleaned)
+
+def remove_duplicate_headline(txt, headline):
+    """v47: если первая строка дублирует заголовок — удаляет её."""
+    if not headline:
+        return txt
+    lines = txt.split("\n")
+    # Ищем первую непустую строку
+    first_content_idx = None
+    for i, line in enumerate(lines):
+        if line.strip():
+            first_content_idx = i
+            break
+    if first_content_idx is None:
+        return txt
+    first_line = lines[first_content_idx].strip()
+    # Сравниваем без регистра и пунктуации
+    norm_headline = re.sub(r'[^\w\s]', '', headline.lower()).strip()
+    norm_first = re.sub(r'[^\w\s]', '', first_line.lower()).strip()
+    if norm_headline and norm_first and norm_headline == norm_first:
+        log(f" Удалён дубликат заголовка в первой строке: {first_line[:80]}")
+        lines.pop(first_content_idx)
+        # Убираем пустые строки после удаления
+        while lines and not lines[0].strip():
+            lines.pop(0)
+    return "\n".join(lines)
 
 # ============================================================
 # ТЕКСТЫ: статья (Дзен) + тизер (TG/MAX) + сцена
@@ -302,17 +359,22 @@ def build_article(book, day):
               f"3. Объём СТРОГО 1500-2000 символов, 4-6 абзацев: завязка, герои, конфликт, "
               f"атмосфера, 1-2 интригующих вопроса, без пересказа финала. "
               f"4. Живой литературный язык, без капса и кликбейта-мусора. "
-              f"5. ПЕРВАЯ СТРОКА ТЕКСТА НЕ ДОЛЖНА ПОВТОРЯТЬ ЗАГОЛОВОК — начинай сразу с сюжета, "
-              f"атмосферы или вопроса, а не с пересказа заголовка. "
+              f"5. КАТЕГОРИЧЕСКИЙ ЗАПРЕТ: первая строка текста НЕ ДОЛЖНА совпадать с заголовком "
+              f"ни словом, ни фразой. Начинай сразу с сюжета, действия, диалога или вопроса. "
               f"6. СТРОГИЙ ЗАПРЕТ: в тексте статьи НЕ должно быть фраз «Купить книгу можно здесь:», "
               f"«[ссылка на ЛитРес]», «ссылка на ЛитРес», «читайте на ЛитРес», «купить можно тут» "
               f"и любых других упоминаний ЛитРес кроме ОДНОЙ финальной строки. "
-              f"7. Финальная строка статьи — ровно: «Купить книгу можно на ЛитРес: https://www.litres.ru/book/...» "
-              f"(с реальной ссылкой из данных). Никаких вводных слов перед ней.")
+              f"7. НЕ добавляй в текст ссылки на ЛитРес самостоятельно — финальная ссылка будет "
+              f"добавлена автоматически после статьи. "
+              f"8. ЗАПРЕЩЕНО использовать Markdown-разметку: никаких <ссылок>, [текст](url), "
+              f"**жирного**, _курсива_. Ссылки писать только как голый URL без скобок и обрамления.")
     txt = ai_text(prompt, minlen=1000, rescue_min=600)
     if not txt:
         log("⚠️ Статья не создана — стандартный текст.")
         txt = f"РОМАН «{t.upper()}»: ИСТОРИЯ, КОТОРАЯ ЗАТЯГИВАЕТ\n\n{a}"
+    # v47: чистим артефакты модели
+    txt = clean_model_artifacts(txt)
+    txt = remove_litres_mentions(txt)
     txt = extend_text(txt, 1500)
     return fix_headline(clean_txt(txt))
 
@@ -330,10 +392,11 @@ def build_teaser(book, day):
     if not txt:
         log("⚠️ Тизер не создан — стандартный текст.")
         txt = f"РОМАН «{t.upper()}»: ИСТОРИЯ, КОТОРАЯ ЗАТЯГИВАЕТ\n\n{a}"
+    txt = clean_model_artifacts(txt)
     return fix_headline(clean_txt(txt))
 
 def build_scene(post):
-    """v46: сцена может включать героя с эмоцией/лицом (OpenAI); pollinations уйдёт в силуэт."""
+    """v47: сцена может включать героя с эмоцией/лицом (OpenAI); pollinations уйдёт в силуэт."""
     prompt = (f"Из текста ниже выбери ОДНУ самую интригующую сцену и опиши её в 1-2 предложениях: "
               f"драматичный момент с героем (допустимы эмоция, пол-оборота, лицо) ИЛИ загадочный "
               f"предмет/место, ощущение опасности или тайны. Без толп людей.\n\n"
@@ -341,7 +404,7 @@ def build_scene(post):
     return ai_text(prompt, minlen=30, rescue_min=30)
 
 # ============================================================
-# КАРТИНКИ v46: OpenAI 1024x1024 low + лица; pollinations — силуэты
+# КАРТИНКИ v47: OpenAI 1024x1024 low + лица; pollinations — силуэты
 # ============================================================
 
 def image_stats(img_bytes):
@@ -430,7 +493,7 @@ def pollinations_image(scene, seed):
         return None
 
 def download_image(scene_text, seed):
-    """v46: OpenAI — люди и лица разрешены; pollinations — только силуэты со спины."""
+    """v47: OpenAI — люди и лица разрешены; pollinations — только силуэты со спины."""
     clean_img = "".join(c for c in scene_text if c.isalnum() or c.isspace() or c in ".,-")[:220].strip()
     base = ("Eye-catching cinematic book-promo artwork, BRIGHT and LUMINOUS: golden-hour sunlight or "
             "glowing practical light filling the whole scene, vivid saturated colors, high contrast "
@@ -560,7 +623,7 @@ def max_collect_ids():
     u = _max_get("updates")
     if isinstance(u, dict):
         ups = u.get("updates") or []
-        log(f"️ MAX /updates: событий = {len(ups)}")
+        log(f"ℹ️ MAX /updates: событий = {len(ups)}")
         for up in ups:
             t = up.get("update_type") or ""
             if t in ("bot_added", "bot_started", "chat_added", "bot_added_to_chat"):
@@ -568,7 +631,7 @@ def max_collect_ids():
                 cid = chat.get("chat_id") or chat.get("id") or up.get("chat_id")
                 if cid and cid not in ids:
                     ids.insert(0, cid)
-                    log(f"ℹ️ MAX: ID из события подписки {t}: {cid}")
+                    log(f"️ MAX: ID из события подписки {t}: {cid}")
             rec = ((up.get("message") or {}).get("recipient")) or {}
             cid = rec.get("chat_id")
             if cid and cid not in ids:
@@ -588,7 +651,7 @@ def max_upload(img_bytes, chat_val):
     u = _max_call("uploads", params={"type": "image", "chat_id": chat_val})
     up_url = (u or {}).get("url") if isinstance(u, dict) else None
     if not up_url:
-        log(f"️ MAX uploads: нет url: {str(u)[:150]}")
+        log(f"⚠️ MAX uploads: нет url: {str(u)[:150]}")
         return None
     try:
         ru = requests.post(up_url, files={"data": ("cover.jpg", img_bytes, "image/jpeg")},
@@ -628,7 +691,7 @@ def max_post(img_bytes, text):
         if str(MAX_CHAT) not in variants:
             variants.append(str(MAX_CHAT))
     if not variants:
-        log("️ MAX: ни одного chat_id из событий и секрета")
+        log("⚠️ MAX: ни одного chat_id из событий и секрета")
         return False
     log(f"ℹ️ MAX: кандидаты chat_id: {variants}")
     att = max_upload(img_bytes, variants[0]) if img_bytes else None
@@ -642,12 +705,12 @@ def max_post(img_bytes, text):
             m = r.get("message") or {}
             log(f"✅ MAX: пост отправлен (chat_id={chat_val}, id={m.get('id')})")
             return True
-        log(f"️ MAX: chat_id={chat_val} → {str(r)[:150]}")
+        log(f"⚠️ MAX: chat_id={chat_val} → {str(r)[:150]}")
     if user_ids:
         uid = user_ids[0]
         log(f"🔬 MAX диагностика: тест в личку user_id={uid} (params URL)")
         r = _max_call("messages", params={"user_id": uid},
-                      payload={"text": "🔧 Служебная проверка отправки бота (v46)"})
+                      payload={"text": "🔧 Служебная проверка отправки бота (v47)"})
         ok = isinstance(r, dict) and (r.get("success") is True or isinstance(r.get("message"), dict))
         log(f"🔬 MAX личка: {'УСПЕХ — токен работает, дело в правах на канал' if ok else str(r)[:150]}")
     return False
@@ -667,6 +730,11 @@ def main():
     log(f"📄 Статья: {len(article)} симв. Заголовок: {article.split(chr(10))[0][:120]}")
     teaser = build_teaser(book, day)
     log(f"✂️ Тизер: {len(teaser)} симв. Заголовок: {teaser.split(chr(10))[0][:120]}")
+
+    # v47: удаляем дубликат заголовка в первой строке статьи
+    headline = article.split("\n")[0].strip() if article else ""
+    article = remove_duplicate_headline(article, headline)
+    log(f"📄 Статья после чистки: {len(article)} симв.")
 
     link = book.get("url", "")
     link_part = f"\n\nКупить книгу можно на ЛитРес: {link}" if link else ""
@@ -690,7 +758,7 @@ def main():
         path = f"img/dz_{day}.jpg"
         with open(path, "wb") as f:
             f.write(img_bytes)
-        log(f" Картинка сохранена: {path}")
+        log(f"💾 Картинка сохранена: {path}")
     else:
         candidates = []
         for f in glob.glob("img/dz_*.jpg"):
